@@ -1,0 +1,515 @@
+import React, { useEffect, useMemo } from 'react';
+import { usePlotArea, useXAxisScale, useYAxisScale } from 'recharts';
+import { fontSize_10 } from '../../../../../../variables.module.scss';
+import { chartConfigs } from './debt-over-last-100y-linechart-helper';
+import { addInnerChartAriaLabel, applyChartScaling, applyTextScaling } from '../../../../explainer-helpers/explainer-charting-helper';
+import CustomSlices from '../../../../../../components/nivo/custom-slice/custom-slice';
+import Point from '../../../../../../components/nivo/custom-point/point';
+
+/*
+ * The layers the chart draws on top of the recharts area: the crosshair, the hovered point, and the
+ * invisible hover targets. They live here rather than in the chart file because each one has to be
+ * rendered inside the chart to reach the recharts scale and plot-area hooks, and together they were
+ * crowding out the component they support.
+ */
+
+/* Pixel position of every datum, which the hover layers below are all drawn from. */
+const usePointPositions = data => {
+  const xScale = useXAxisScale();
+  const yScale = useYAxisScale();
+  return useMemo(() => {
+    if (!xScale || !yScale) {
+      return null;
+    }
+    return data.map(datum => ({ x: xScale(datum.x), y: yScale(datum.y), data: datum }));
+  }, [xScale, yScale, data]);
+};
+
+/*
+ * One hover target per datum, each reaching halfway to its neighbors. The first target begins at
+ * the first datum rather than at the left edge, and the last one runs out to the right edge of the
+ * plot area, which is how the slices were shaped before the recharts migration.
+ */
+const buildSlices = (points, plotArea) =>
+  points.map((point, index) => {
+    const previous = points[index - 1];
+    const next = points[index + 1];
+    const x0 = previous ? point.x - (point.x - previous.x) / 2 : point.x;
+    const x1 = next ? point.x + (next.x - point.x) / 2 : plotArea.x + plotArea.width;
+    return {
+      id: index,
+      x: point.x,
+      x0,
+      y0: plotArea.y,
+      width: x1 - x0,
+      height: plotArea.height,
+      points: [point],
+    };
+  });
+
+/*
+ * Rewrites the svg so it scales with its container, and scales the tick text back up to compensate.
+ * This lives inside the chart because recharts only renders its svg once it has measured itself,
+ * which is a render later than the one where the chart data arrives.
+ */
+export const ChartScaling = ({ parent, chartWidth, chartHeight, pageWidth }) => {
+  const plotArea = usePlotArea();
+  const plotWidth = plotArea?.width;
+  const plotHeight = plotArea?.height;
+
+  useEffect(() => {
+    if (!plotWidth || !plotHeight) {
+      return;
+    }
+    applyChartScaling(parent, chartWidth.toString(), chartHeight.toString());
+    addInnerChartAriaLabel(parent);
+    applyTextScaling(parent, chartWidth, pageWidth, fontSize_10);
+  }, [parent, chartWidth, chartHeight, pageWidth, plotWidth, plotHeight]);
+
+  return null;
+};
+
+export const Crosshair = ({ currentSlice }) => {
+  const plotArea = usePlotArea();
+  if (!currentSlice || !plotArea) {
+    return null;
+  }
+  return (
+    <line x1={currentSlice.x} x2={currentSlice.x} y1={plotArea.y} y2={plotArea.y + plotArea.height} fill="none" style={chartConfigs.crosshair} />
+  );
+};
+
+export const HoverPoint = ({ data, currentSlice }) => {
+  const points = usePointPositions(data);
+  const currentPoint = currentSlice ? currentSlice.points[0] : points?.[points.length - 1];
+  return <g data-testid="customPoints">{!!currentPoint && <Point currentPoint={currentPoint} />}</g>;
+};
+
+export const HoverSlices = ({ data, ...sliceProps }) => {
+  const points = usePointPositions(data);
+  const plotArea = usePlotArea();
+  const slices = useMemo(() => (points && plotArea ? buildSlices(points, plotArea) : []), [points, plotArea]);
+  if (!slices.length) {
+    return null;
+  }
+  return <CustomSlices slices={slices} data={data} {...sliceProps} />;
+};
+
+
+
+
+import React from 'react';
+import { header, subHeader, headerContainer } from './debt-over-last-100y-linechart.module.scss';
+import numeral from 'numeral';
+import { explainerCitationsMap } from '../../../../explainer-helpers/explainer-helpers';
+import { fontSize_14 } from '../../../../../../variables.module.scss';
+
+const { bls, historicalDebt } = explainerCitationsMap['national-debt'];
+
+const footer = (
+  <p>
+    Visit the {historicalDebt} dataset to explore and download this data. The inflation data is sourced from the {bls}.
+  </p>
+);
+
+export const getChartCopy = (minYear, maxYear, selectedChartView) => {
+  return {
+    title: `U.S. National Debt Over the Last 100 Years`,
+    subtitle: `Inflation Adjusted - ${maxYear ?? '--'} Dollars`,
+    footer: footer,
+    altText:
+      'Line graph displaying the amount of debt in trillions from 1922 to 2022. The graph shows a steady trend with an ' +
+      'increase beginning around 1940 continuing through today.',
+  };
+};
+
+export const dataHeader = headingValues => {
+  const { fiscalYear, totalDebt } = headingValues;
+  return (
+    <div className={headerContainer}>
+      <div>
+        <div className={header} data-testid="dynamic-year-header">
+          {fiscalYear}
+        </div>
+        <span className={subHeader}>Fiscal Year</span>
+      </div>
+      <div>
+        <div className={header} data-testid="dynamic-value-header">
+          {totalDebt}
+        </div>
+        <span className={subHeader}>Total Debt</span>
+      </div>
+    </div>
+  );
+};
+
+/*
+ * Recharts hands the axis' own width down to each tick label as the width it may wrap within, so
+ * the 1px axis box below would otherwise break "$40 T" onto two lines at the space. The separator
+ * is a non-breaking space, which recharts excludes from the characters it wraps on, keeping the
+ * label on one line no matter how narrow the axis box is.
+ */
+export const formatDollarTick = value => {
+  const newValue = numeral(value)
+    .format('0 a')
+    .toUpperCase();
+  return `$${newValue}`.replace(' ', '\u00A0');
+};
+
+/*
+ * The d3 tick algorithm, reimplemented here so the axes keep landing on the same values they did
+ * when this chart was drawn with nivo (which derives its scales from d3). Recharts leaves tick
+ * selection and domain rounding up to the caller, so we do it ourselves rather than let the two
+ * libraries disagree about where "nice" numbers are.
+ */
+const e10 = Math.sqrt(50);
+const e5 = Math.sqrt(10);
+const e2 = Math.sqrt(2);
+
+const tickSpacing = (start, stop, count) => {
+  const step = Math.abs(stop - start) / Math.max(1, count);
+  const power = Math.floor(Math.log10(step));
+  const error = step / Math.pow(10, power);
+  const factor = error >= e10 ? 10 : error >= e5 ? 5 : error >= e2 ? 2 : 1;
+  return factor * Math.pow(10, power);
+};
+
+export const getTicks = (start, stop, count) => {
+  const step = tickSpacing(start, stop, count);
+  const ticks = [];
+  for (let i = Math.ceil(start / step); i <= Math.floor(stop / step); i++) {
+    ticks.push(i * step);
+  }
+  return ticks;
+};
+
+/* Rounds a domain outward to the nearest "nice" tick values, the way d3's scale.nice() does. */
+export const getNiceDomain = (min, max, count = 10) => {
+  let start = min;
+  let stop = max;
+  let previousStep;
+  for (let i = 0; i < 10; i++) {
+    const step = tickSpacing(start, stop, count);
+    if (step === previousStep) break;
+    start = Math.floor(start / step) * step;
+    stop = Math.ceil(stop / step) * step;
+    previousStep = step;
+  }
+  return [start, stop];
+};
+
+/*
+ * Recharts refuses to render an axis whose box has no thickness, and it adds that thickness to the
+ * chart margin when it works out the plot area. The axes are therefore given a 1px box that is
+ * taken back out of the margins below, which leaves the plot area exactly where nivo drew it.
+ */
+const axisThickness = 1;
+
+export const getChartMargin = isMobile => {
+  const margin = isMobile ? { top: 25, right: 25, bottom: 35, left: 65 } : { top: 20, right: 15, bottom: 35, left: 50 };
+  return { ...margin, bottom: margin.bottom - axisThickness, left: margin.left - axisThickness };
+};
+
+export const chartConfigs = {
+  axisThickness,
+  tickSize: 10,
+  tickMargin: 5,
+  axisLine: { stroke: '#666666', strokeWidth: 1 },
+  tickLine: { stroke: '#777777', strokeWidth: 1 },
+  tick: { fill: '#333333', fontFamily: 'sans-serif', fontSize: fontSize_14 },
+  crosshair: {
+    stroke: '#555555',
+    strokeWidth: 2,
+    strokeOpacity: 0.75,
+    strokeDasharray: '6 6',
+    pointerEvents: 'none',
+  },
+  /*
+   * Recharts stacks its layers by zIndex rather than by the order children appear, so these
+   * values reproduce the layer order this chart used under nivo: crosshair first (which is why it
+   * reads as sitting behind the filled area), then the axes, then the area itself at the recharts
+   * default of 100, then the hover point and the hover slices on top.
+   */
+  zIndex: { axis: 50, point: 600, slices: 700 },
+};
+
+
+
+
+
+import React, { useEffect, useState } from 'react';
+import { Area, AreaChart, XAxis, YAxis, ZIndexLayer } from 'recharts';
+import { pxToNumber } from '../../../../../../helpers/styles-helper/styles-helper';
+import ChartContainer from '../../../../explainer-components/chart-container/chart-container';
+import { breakpointLg } from '../../../../../../variables.module.scss';
+import {
+  chartConfigs,
+  dataHeader,
+  formatDollarTick,
+  getChartCopy,
+  getChartMargin,
+  getNiceDomain,
+  getTicks,
+} from './debt-over-last-100y-linechart-helper';
+import { visWithCallout } from '../../../../explainer.module.scss';
+import VisualizationCallout from '../../../../../../components/visualization-callout/visualization-callout';
+import { container, lineChart, loadingIcon } from './debt-over-last-100y-linechart.module.scss';
+import { chartInViewProps } from '../../../../explainer-helpers/explainer-charting-helper';
+import { ChartScaling, Crosshair, HoverPoint, HoverSlices } from './debt-over-last-100y-linechart-layers';
+import { adjustDataForInflation } from '../../../../../../helpers/inflation-adjust/inflation-adjust';
+import simplifyNumber from '../../../../../../helpers/simplify-number/simplifyNumber';
+import Analytics from '../../../../../../utils/analytics/analytics';
+import { getDateWithoutTimeZoneAdjust } from '../../../../../../utils/date-utils';
+import { useInView } from 'react-intersection-observer';
+import { debtOutstandingData } from '../../../../../../recoil/debtOutstandingDataState';
+import { debtExplainerPrimary } from '../../../../../../variables.module.scss';
+import LoadingIndicator from '../../../../../../components/loading-indicator/loading-indicator';
+import { useWindowSize } from 'usehooks-ts';
+
+let gaTimerDebt100Yrs;
+let ga4Timer;
+
+const DebtOverLast100y = ({ cpiDataByYear }) => {
+  const [isLoading, setIsLoading] = useState(true);
+  const [minYear, setMinYear] = useState();
+  const [maxYear, setMaxYear] = useState();
+  const [maxAmount, setMaxAmount] = useState(0);
+  const [lastUpdatedDate, setLastUpdatedDate] = useState(null);
+  const [lastDebtValue, setLastDebtValue] = useState('');
+  const [firstDebtValue, setFirstDebtValue] = useState('');
+  const [chartData, setChartData] = useState(null);
+  const [totalDebtHeadingValues, setTotalDebtHeadingValues] = useState({ fiscalYear: '--', totalDebt: '$--' });
+  const [bottomAxisValue, setBottomAxisValues] = useState([]);
+  const [hoverDisabled, setHoverDisabled] = useState(true);
+  const [currentSlice, setCurrentSlice] = useState(null);
+  const payload = debtOutstandingData(state => state.payload);
+  const status = debtOutstandingData(state => state.status);
+  const refreshIfStale = debtOutstandingData(state => state.refreshIfStale);
+
+  useEffect(() => {
+    refreshIfStale();
+  }, [refreshIfStale]);
+
+  const { width } = useWindowSize();
+  const { ref, inView } = useInView(chartInViewProps);
+
+  const chartParent = 'totalDebtChartParent';
+  const chartWidth = 550;
+  const chartHeight = 490;
+
+  const processData = () => {
+    let dataResult = payload;
+    dataResult = adjustDataForInflation(dataResult, 'debt_outstanding_amt', 'record_date', cpiDataByYear);
+    const finalDebtChartData = [];
+
+    dataResult.forEach(debt => {
+      finalDebtChartData.push({
+        x: parseInt(debt.record_fiscal_year),
+        y: parseInt(debt.debt_outstanding_amt),
+        simplified: simplifyNumber(debt.debt_outstanding_amt, true),
+        fiscalYear: debt.record_fiscal_year,
+        record_date: debt.record_date,
+      });
+    });
+    finalDebtChartData.reverse();
+
+    const debtMaxYear = finalDebtChartData.reduce((max, spending) => (max.x > spending.x ? max : spending));
+
+    const debtMinYear = finalDebtChartData.reduce((min, spending) => (min.x < spending.x ? min : spending));
+    setMinYear(debtMinYear.x);
+    setMaxYear(debtMaxYear.x);
+    const axisValues = [];
+    let axisVal = debtMinYear.x;
+    for (let i = 0; i < 6; i++) {
+      axisValues.push(axisVal);
+      axisVal += 20;
+    }
+    setBottomAxisValues(axisValues);
+    const debtMaxAmount = finalDebtChartData.reduce((max, spending) => (max.y > spending.y ? max : spending));
+
+    const debtMaxAmountRoundedUp = Math.ceil(debtMaxAmount.y / 5000000000000) * 5000000000000;
+    setMaxAmount(debtMaxAmountRoundedUp);
+
+    const debtFirstAmountActual = finalDebtChartData[0].y;
+    const debtLastAmountActual = finalDebtChartData[finalDebtChartData.length - 1].y;
+
+    setLastDebtValue(simplifyNumber(debtLastAmountActual, true));
+    setFirstDebtValue(simplifyNumber(debtFirstAmountActual, true));
+
+    const lastUpdatedDateDebt = new Date(finalDebtChartData[finalDebtChartData.length - 1].record_date);
+    setLastUpdatedDate(getDateWithoutTimeZoneAdjust(lastUpdatedDateDebt));
+
+    setTotalDebtHeadingValues({
+      fiscalYear: debtMaxYear.x,
+      totalDebt: simplifyNumber(debtLastAmountActual, true),
+    });
+
+    setChartData(finalDebtChartData);
+    setIsLoading(false);
+  };
+
+  useEffect(() => {
+    if (status === 'hasValue' && payload) {
+      processData();
+    }
+  }, [status, payload]);
+
+  const handleGroupOnMouseLeave = () => {
+    setTotalDebtHeadingValues({
+      fiscalYear: maxYear,
+      totalDebt: lastDebtValue,
+    });
+  };
+
+  const handleMouseLeave = slice => {
+    const debtData = slice.points[0].data;
+    if (debtData) {
+      setTotalDebtHeadingValues({
+        fiscalYear: debtData.x,
+        totalDebt: debtData.simplified,
+      });
+    }
+  };
+
+  const { title: chartTitle, subtitle: chartSubtitle, footer: chartFooter, altText: chartAltText } = getChartCopy(minYear, maxYear);
+
+  const handleChartMouseEnter = () => {
+    gaTimerDebt100Yrs = setTimeout(() => {
+      Analytics.event({
+        category: 'Explainers',
+        action: 'Chart Hover',
+        label: 'Debt - U.S. Federal Debt Trends Over the Last 100 Years',
+      });
+    }, 3000);
+    ga4Timer = setTimeout(() => {
+      window.dataLayer = window.dataLayer || [];
+      window.dataLayer.push({
+        event: 'chart-hover-debt-100y',
+      });
+    }, 3000);
+  };
+  const handleChartMouseLeave = () => {
+    clearTimeout(gaTimerDebt100Yrs);
+    clearTimeout(ga4Timer);
+  };
+
+  return (
+    <>
+      <figure className={visWithCallout}>
+        <div className={container}>
+          <ChartContainer
+            title={chartTitle}
+            subTitle={chartSubtitle}
+            footer={chartFooter}
+            date={lastUpdatedDate}
+            header={dataHeader(totalDebtHeadingValues)}
+            altText={chartAltText}
+          >
+            {isLoading ? (
+              <LoadingIndicator loadingClass={loadingIcon} />
+            ) : (
+              <div
+                className={lineChart}
+                style={{ pointerEvents: hoverDisabled ? 'none' : 'auto' }}
+                data-testid="totalDebtChartParent"
+                onMouseEnter={handleChartMouseEnter}
+                onMouseLeave={handleChartMouseLeave}
+                role="presentation"
+                ref={ref}
+              >
+                <AreaChart
+                  data={chartData}
+                  width={chartWidth}
+                  height={chartHeight}
+                  margin={getChartMargin(width < pxToNumber(breakpointLg))}
+                  style={{ width: '100%', height: 'auto' }}
+                  accessibilityLayer={false}
+                  role="img"
+                >
+                  <ChartScaling parent={chartParent} chartWidth={chartWidth} chartHeight={chartHeight} pageWidth={width} />
+                  <Crosshair currentSlice={currentSlice} />
+                  <XAxis
+                    dataKey="x"
+                    type="number"
+                    domain={getNiceDomain(minYear, maxYear)}
+                    ticks={bottomAxisValue}
+                    interval={0}
+                    height={chartConfigs.axisThickness}
+                    tickSize={chartConfigs.tickSize}
+                    tickMargin={chartConfigs.tickMargin}
+                    axisLine={chartConfigs.axisLine}
+                    tickLine={chartConfigs.tickLine}
+                    tick={chartConfigs.tick}
+                    zIndex={chartConfigs.zIndex.axis}
+                  />
+                  <YAxis
+                    dataKey="y"
+                    type="number"
+                    domain={[0, maxAmount]}
+                    ticks={getTicks(0, maxAmount, 7)}
+                    interval={0}
+                    width={chartConfigs.axisThickness}
+                    tickFormatter={formatDollarTick}
+                    tickSize={chartConfigs.tickSize}
+                    tickMargin={chartConfigs.tickMargin}
+                    axisLine={chartConfigs.axisLine}
+                    tickLine={chartConfigs.tickLine}
+                    tick={chartConfigs.tick}
+                    zIndex={chartConfigs.zIndex.axis}
+                  />
+                  <Area
+                    dataKey="y"
+                    type="linear"
+                    fill={debtExplainerPrimary}
+                    fillOpacity={1}
+                    stroke={debtExplainerPrimary}
+                    strokeWidth={2}
+                    baseValue={0}
+                    dot={false}
+                    activeDot={false}
+                    isAnimationActive={false}
+                  />
+                  <ZIndexLayer zIndex={chartConfigs.zIndex.point}>
+                    <HoverPoint data={chartData} currentSlice={currentSlice} />
+                  </ZIndexLayer>
+                  <ZIndexLayer zIndex={chartConfigs.zIndex.slices}>
+                    <HoverSlices
+                      data={chartData}
+                      setCurrentSlice={setCurrentSlice}
+                      groupMouseLeave={handleGroupOnMouseLeave}
+                      mouseMove={handleMouseLeave}
+                      inView={inView}
+                      onAnimationComplete={() => setHoverDisabled(false)}
+                    />
+                  </ZIndexLayer>
+                </AreaChart>
+              </div>
+            )}
+          </ChartContainer>
+        </div>
+        <VisualizationCallout color="">
+          <p>
+            Over the past 100 years, the U.S. federal debt has increased from {firstDebtValue || '$--'} in {minYear || '--'} to{' '}
+            {lastDebtValue || '$--'} in {maxYear || '--'}.
+          </p>
+        </VisualizationCallout>
+      </figure>
+    </>
+  );
+};
+
+export default DebtOverLast100y;
+
+
+
+
+  :global(.recharts-wrapper) {
+      width: 100% !important;
+      height: auto !important;
+    }
+
+    :global(.recharts-surface) {
+      display: block;
+      width: 100% !important;
+      height: auto !important;
+    }
