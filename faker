@@ -1,1 +1,440 @@
+import React, { FunctionComponent, useEffect, useState } from 'react';
+import { faDatabase } from '@fortawesome/free-solid-svg-icons/faDatabase';
+import DropdownLabelButton from './../../dropdown-label-button/dropdown-label-button';
+import DropdownContainer from '../../dropdown-container/dropdown-container';
+import DataPreviewDropdownDialogContainer from '../data-preview-dropdown-dialog/data-preview-dropdown-dialog';
+import DataPreviewPivotSelect from '../data-preview-pivot-select/data-preview-pivot-select';
+import { ITableSelectDropdown } from '../../../models/data-preview/ITableSelectDropdown';
+import DataPreviewDropdownDialogSearch from '../data-preview-dropdown-search/data-preview-dropdown-dialog-search';
+import { pxToNumber } from '../../../helpers/styles-helper/styles-helper';
+import { breakpointLg } from '../data-preview.module.scss';
+import DataPreviewMobileDialog from '../data-preview-mobile-dialog/data-preview-mobile-dialog';
+import DataPreviewMobileFilterList from '../data-preview-filter-section/data-preview-mobile-filter-list/data-preview-mobile-filter-list';
+
+const DataPreviewTableSelectDropdown: FunctionComponent<ITableSelectDropdown> = ({
+  apis,
+  selectedTable,
+  setSelectedTable,
+  allTablesSelected,
+  earliestDate,
+  latestDate,
+  disableAllTables,
+  selectedPivot,
+  setSelectedPivot,
+  hideDropdown,
+  width,
+  pivotsUpdated,
+}) => {
+  const allTablesOption = {
+    allDataTables: true,
+    pathName: 'all-data-tables',
+    tableName: 'All Data Tables (Download Only)',
+    valueFieldOptions: null,
+  };
+
+  const initialSelectedTable = allTablesSelected ? allTablesOption : selectedTable;
+  const [active, setActive] = useState(false);
+  const [tableToApply, setTableToApply] = useState(initialSelectedTable);
+  const [pivotToApply, setPivotToApply] = useState(selectedPivot);
+  const [appliedTableView, setAppliedTableView] = useState('rawData');
+  const [tableViewSelection, setTableViewSelection] = useState(appliedTableView);
+  const [isDataTableSelected, setIsDataTableSelected] = useState(false);
+  const [filter, setFilter] = useState('');
+
+  // 54px comes from subtracting the padding and margins on both sides of the container
+  const containerWidth = 'calc(100vw - 54px)';
+  const options = disableAllTables
+    ? apis
+    : [
+        {
+          ...allTablesOption,
+          earliestDate,
+          latestDate,
+        },
+      ].concat(apis);
+
+  const dropdownButton = (
+    <DropdownLabelButton
+      label="Data Table"
+      icon={faDatabase}
+      selectedOption={allTablesSelected ? allTablesOption.tableName : selectedTable?.tableName}
+      active={active}
+      setActive={setActive}
+      dropdownWidth={width < pxToNumber(breakpointLg) ? '100%' : '30rem'}
+    />
+  );
+
+  const handleApply = () => {
+    // All Data Tables is a download only option rather than a table selection, so applying it leaves
+    // the applied table view and pivot alone for the table the user returns to
+    const applyingAllTables = !!tableToApply?.allDataTables;
+    if (!applyingAllTables) {
+      setAppliedTableView(tableViewSelection);
+    }
+    if (tableToApply !== selectedTable || (allTablesSelected && !tableToApply.allDataTables)) {
+      setSelectedTable(tableToApply);
+    }
+    if (!applyingAllTables) {
+      if (tableViewSelection === 'pivotData') {
+        if (pivotToApply !== selectedPivot) {
+          setSelectedPivot(pivotToApply);
+        }
+      } else {
+        const localPivotFields = getPivotFields(tableToApply);
+        const pivot = {
+          pivotView: tableToApply.dataDisplays ? tableToApply.dataDisplays[0] : null,
+          pivotValue: localPivotFields && tableToApply.dataDisplays[0].dimensionField ? localPivotFields[0] : null,
+        };
+        setSelectedPivot(pivot);
+      }
+    }
+    setActive(false);
+    if (isDataTableSelected) {
+      setIsDataTableSelected(false);
+    }
+  };
+
+  const handleCancel = () => {
+    setActive(false);
+    if (isDataTableSelected) {
+      setIsDataTableSelected(false);
+    }
+  };
+  const handleBack = () => {
+    if (isDataTableSelected) {
+      setIsDataTableSelected(false);
+    }
+  };
+
+  const isAppliedTable = table => !!table && !!selectedTable && (table === selectedTable || (!!table.apiId && table.apiId === selectedTable.apiId));
+
+  const updateSelectedTable = table => {
+    if (table !== tableToApply) {
+      setTableToApply(table);
+      if (table.allDataTables) {
+        // pivots don't apply to the download only option, but the pivot the user already applied
+        // still belongs to the table they'll return to, so it isn't cleared here
+        setTableViewSelection('rawData');
+      } else if (isAppliedTable(table) && appliedTableView === 'pivotData') {
+        // back on the table that's already applied, so restore what's applied to it
+        setTableViewSelection(appliedTableView);
+        setPivotToApply(selectedPivot);
+      } else {
+        setTableViewSelection('rawData');
+        setPivotToApply(null);
+      }
+    }
+  };
+
+  const getPivotFields = table => {
+    if (table && table.valueFieldOptions) {
+      return table.fields.filter(field => table.valueFieldOptions.indexOf(field.columnName) !== -1);
+    } else {
+      return null;
+    }
+  };
+
+  useEffect(() => {
+    if (!active) {
+      setTableViewSelection(appliedTableView);
+      if (!allTablesSelected) {
+        setTableToApply(selectedTable);
+        if (appliedTableView === 'pivotData') {
+          // a closed dialog leaves the pivot dropdowns matching what's applied
+          setPivotToApply(selectedPivot);
+        }
+      }
+    }
+  }, [active]);
+
+  useEffect(() => {
+    //initialize pivot options
+    if (selectedTable && !selectedTable.allDataTables && !selectedPivot) {
+      const localPivotFields = getPivotFields(selectedTable);
+      const pivot = {
+        pivotView: selectedTable.dataDisplays ? selectedTable.dataDisplays[0] : null,
+        pivotValue: localPivotFields && selectedTable.dataDisplays[0].dimensionField ? localPivotFields[0] : null,
+      };
+      setSelectedPivot(pivot);
+    }
+  }, [selectedTable]);
+
+  const mobileFilterComponent = isDataTableSelected ? (
+    // Shows raw/pivot data options
+    <DataPreviewMobileDialog
+      onCancel={handleCancel}
+      onBack={handleBack}
+      onApply={handleApply}
+      filterName={tableToApply.tableName}
+      hasSearch={false}
+      backButtonText="Data Tables"
+      active={active}
+      filterComponent={
+        <DataPreviewPivotSelect
+          table={tableToApply}
+          pivotToApply={pivotToApply}
+          setPivotToApply={setPivotToApply}
+          tableViewSelection={tableViewSelection}
+          setTableViewSelection={setTableViewSelection}
+          pivotsUpdated={pivotsUpdated}
+          containerWidth={containerWidth}
+        />
+      }
+    />
+  ) : (
+    // Shows tables to select
+    <DataPreviewMobileDialog
+      onCancel={handleCancel}
+      onBack={handleCancel}
+      onApply={handleApply}
+      filterName="Data Tables"
+      searchText="Search data tables"
+      filter={filter}
+      setFilter={setFilter}
+      active={active}
+      filterComponent={
+        <DataPreviewMobileFilterList
+          filterOptions={options}
+          optionLabelKey="tableName"
+          selectedTable={allTablesSelected ? allTablesOption.tableName : selectedTable?.tableName}
+          onTableSelected={updateSelectedTable}
+          onDataTableSelected={() => {
+            setIsDataTableSelected(true);
+          }}
+          filter={filter}
+        />
+      }
+    />
+  );
+
+  return (
+    <>
+      {!hideDropdown && width >= pxToNumber(breakpointLg) && (
+        <DropdownContainer dropdownButton={dropdownButton} setActive={setActive} active={active}>
+          {active && (
+            <DataPreviewDropdownDialogContainer
+              searchComponent={
+                <DataPreviewDropdownDialogSearch
+                  options={options}
+                  searchBarLabel="Search data tables"
+                  selectedOption={tableToApply}
+                  setSelectedOption={updateSelectedTable}
+                  optionLabelKey="tableName"
+                />
+              }
+              filterComponent={
+                <DataPreviewPivotSelect
+                  table={tableToApply}
+                  pivotToApply={pivotToApply}
+                  setPivotToApply={setPivotToApply}
+                  tableViewSelection={tableViewSelection}
+                  setTableViewSelection={setTableViewSelection}
+                  pivotsUpdated={pivotsUpdated}
+                />
+              }
+              header={tableToApply?.tableName}
+              handleApply={handleApply}
+              handleCancel={handleCancel}
+            />
+          )}
+        </DropdownContainer>
+      )}
+      {!hideDropdown && width < pxToNumber(breakpointLg) && (
+        <>
+          {dropdownButton}
+          {mobileFilterComponent}
+        </>
+      )}
+    </>
+  );
+};
+
+export default DataPreviewTableSelectDropdown;
+
+
+
+
+
+
+
+
+_____________________
+
+
+
+
+import React from 'react';
+import { fireEvent, render } from '@testing-library/react';
+import DataPreviewTableSelectDropdown from './data-preview-table-select-dropdown';
+import userEvent from '@testing-library/user-event';
+
+describe('Data Preview Dropdown Dialog', () => {
+  const mockSelectedTable = {
+    tableName: 'Mock Table Name',
+    dataDisplays: [
+      { title: 'Complete Table' },
+      { dimensionField: 'account_type', title: 'By Account Type' },
+      { dimensionField: 'account_number', title: 'By Account Number' },
+    ],
+    valueFieldOptions: ['value_1', 'value_2'],
+    fields: [
+      { columnName: 'value_1', prettyName: 'Value 1' },
+      { columnName: 'value_2', prettyName: 'Value 2' },
+    ],
+  };
+  const mockApis = [mockSelectedTable, { tableName: 'Another Mock Table Name' }];
+
+  it('renders the dropdown button', async () => {
+    const user = userEvent.setup();
+    const mockSetSelectedTable = jest.fn();
+    const { getByRole } = render(
+      <DataPreviewTableSelectDropdown
+        selectedTable={mockSelectedTable}
+        setSelectedTable={mockSetSelectedTable}
+        apis={[]}
+        setSelectedPivot={jest.fn()}
+        width={2000}
+      />
+    );
+    const dropdownButton = getByRole('button', { name: 'Data Table: Mock Table Name' });
+    expect(dropdownButton).toBeInTheDocument();
+    await user.click(dropdownButton);
+  });
+
+  it('updates table selection on apply', () => {
+    const mockSetSelectedTable = jest.fn();
+
+    const { getByRole } = render(
+      <DataPreviewTableSelectDropdown
+        selectedTable={mockSelectedTable}
+        setSelectedTable={mockSetSelectedTable}
+        apis={mockApis}
+        setSelectedPivot={jest.fn()}
+        width={2000}
+      />
+    );
+    const dropdownButton = getByRole('button', { name: 'Data Table: Mock Table Name' });
+    fireEvent.click(dropdownButton);
+    const newTableButton = getByRole('button', { name: 'Another Mock Table Name' });
+    fireEvent.click(newTableButton);
+    const applyButton = getByRole('button', { name: 'Apply' });
+    fireEvent.click(applyButton);
+
+    expect(mockSetSelectedTable).toHaveBeenCalledWith({ tableName: 'Another Mock Table Name' });
+  });
+
+  it('updates pivot selection on apply', () => {
+    const mockSetSelectedTable = jest.fn();
+    const mockSetSelectedPivot = jest.fn();
+
+    const { getByRole } = render(
+      <DataPreviewTableSelectDropdown
+        selectedTable={mockSelectedTable}
+        setSelectedTable={mockSetSelectedTable}
+        apis={mockApis}
+        setSelectedPivot={mockSetSelectedPivot}
+        width={2000}
+      />
+    );
+    const dropdownButton = getByRole('button', { name: 'Data Table: Mock Table Name' });
+    fireEvent.click(dropdownButton);
+    const pivotDataButton = getByRole('radio', { name: 'Pivot Data' });
+    fireEvent.click(pivotDataButton);
+    const pivotViewDropdown = getByRole('button', { name: 'Select Pivot View' });
+    fireEvent.click(pivotViewDropdown);
+    const newPivotViewDropdown = getByRole('button', { name: 'By Account Number' });
+    fireEvent.click(newPivotViewDropdown);
+    const pivotValueDropdown = getByRole('button', { name: 'Select Pivot Value' });
+
+    const applyButton = getByRole('button', { name: 'Apply' });
+    fireEvent.click(applyButton);
+
+    expect(mockSetSelectedPivot).toHaveBeenCalledWith({
+      pivotValue: { columnName: 'value_1', prettyName: 'Value 1' },
+      pivotView: { dimensionField: 'account_number', title: 'By Account Number' },
+    });
+  });
+
+  it('updates dropdown when All Data Tables is selected', () => {
+    const mockSetSelectedTable = jest.fn();
+    const mockSetSelectedPivot = jest.fn();
+
+    const { getByRole, getAllByText, queryByRole } = render(
+      <DataPreviewTableSelectDropdown
+        selectedTable={mockSelectedTable}
+        setSelectedTable={mockSetSelectedTable}
+        apis={mockApis}
+        setSelectedPivot={mockSetSelectedPivot}
+        width={2000}
+      />
+    );
+
+    const dropdownButton = getByRole('button', { name: 'Data Table: Mock Table Name' });
+    fireEvent.click(dropdownButton);
+
+    const allTablesButton = getByRole('button', { name: 'All Data Tables (Download Only)' });
+    fireEvent.click(allTablesButton);
+
+    expect(getAllByText('All Data Tables (Download Only)').length).toBe(2);
+    expect(getByRole('radio', { name: 'Raw Data' })).toBeInTheDocument();
+    expect(queryByRole('radio', { name: 'Pivot Data' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the applied pivot when switching to All Data Tables and back to the same table', () => {
+    // mirrors how data-preview holds table and pivot state: All Data Tables only flips
+    // allTablesSelected, leaving selectedTable on the previously selected table
+    const StatefulDropdown = () => {
+      const [selectedTable, setSelectedTable] = React.useState(mockSelectedTable);
+      const [allTablesSelected, setAllTablesSelected] = React.useState(false);
+      const [selectedPivot, setSelectedPivot] = React.useState();
+
+      const handleSelectedTableChange = table => {
+        if (table.allDataTables) {
+          setAllTablesSelected(true);
+        } else {
+          setAllTablesSelected(false);
+          setSelectedTable(table);
+        }
+      };
+
+      return (
+        <>
+          <div data-testid="appliedPivot">{`${selectedPivot?.pivotView?.title} / ${selectedPivot?.pivotValue?.prettyName}`}</div>
+          <DataPreviewTableSelectDropdown
+            selectedTable={selectedTable}
+            setSelectedTable={handleSelectedTableChange}
+            allTablesSelected={allTablesSelected}
+            apis={mockApis}
+            selectedPivot={selectedPivot}
+            setSelectedPivot={setSelectedPivot}
+            width={2000}
+          />
+        </>
+      );
+    };
+
+    const { getByRole, getByTestId } = render(<StatefulDropdown />);
+    const openDropdown = () => fireEvent.click(getByRole('button', { name: /Data Table:/ }));
+
+    openDropdown();
+    fireEvent.click(getByRole('radio', { name: 'Pivot Data' }));
+    fireEvent.click(getByRole('button', { name: 'Apply' }));
+    expect(getByTestId('appliedPivot')).toHaveTextContent('By Account Type / Value 1');
+
+    openDropdown();
+    fireEvent.click(getByRole('button', { name: 'All Data Tables (Download Only)' }));
+    fireEvent.click(getByRole('button', { name: 'Apply' }));
+    expect(getByTestId('appliedPivot')).toHaveTextContent('By Account Type / Value 1');
+
+    openDropdown();
+    fireEvent.click(getByRole('button', { name: 'Mock Table Name' }));
+    expect(getByRole('radio', { name: 'Pivot Data' })).toBeChecked();
+    expect(getByRole('button', { name: 'Select Pivot View' })).toHaveTextContent('By Account Type');
+
+    fireEvent.click(getByRole('button', { name: 'Apply' }));
+    expect(getByTestId('appliedPivot')).toHaveTextContent('By Account Type / Value 1');
+  });
+});
+
+
 
