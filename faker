@@ -1,1 +1,492 @@
 
+import { act, fireEvent, render, waitFor } from '@testing-library/react';
+import { nationalDebtSectionIds } from '../../national-debt';
+import React from 'react';
+import { determineBEAFetchResponse } from '../../../../../../utils/mock-utils';
+import { mockBeaGDPData, mockExplainerPageResponse } from '../../../../explainer-test-helper';
+import Analytics from '../../../../../../utils/analytics/analytics';
+import { DebtTrendsOverTimeChart } from './debt-trends-over-time-chart';
+import { mockAllIsIntersecting } from 'react-intersection-observer/test-utils';
+
+jest.useFakeTimers();
+
+describe('Debt Trends Over Time Chart', () => {
+  const sectionId = nationalDebtSectionIds[3];
+
+  beforeEach(() => {
+    determineBEAFetchResponse(jest, mockExplainerPageResponse);
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    jest.resetModules();
+    global.fetch.mockReset();
+  });
+
+  it('contains the debt trends line chart', async () => {
+    const fetchSpy = jest.spyOn(global, 'fetch');
+    const { findByTestId } = render(
+      <>
+        <DebtTrendsOverTimeChart beaGDPData={mockBeaGDPData} sectionId={sectionId} />
+      </>
+    );
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalled);
+
+    expect(await findByTestId('debtTrendsChart')).toBeInTheDocument();
+  });
+
+  it('Renders the initial chart point for onScroll animation', async () => {
+    const { findByTestId, getByTestId } = render(
+      <>
+        <DebtTrendsOverTimeChart beaGDPData={mockBeaGDPData} sectionId={sectionId} />
+      </>
+    );
+
+    expect(await findByTestId('debtTrendsChart')).toBeInTheDocument();
+    expect(await getByTestId('customPoints')).toBeInTheDocument();
+    expect((await getByTestId('customPoints').querySelector('circle')?.length) === 2);
+  });
+
+  it('moves between data points with the arrow keys from a single tab stop', async () => {
+    const { findByTestId, getByTestId, container } = render(
+      <>
+        <DebtTrendsOverTimeChart beaGDPData={mockBeaGDPData} sectionId={sectionId} />
+      </>
+    );
+
+    expect(await findByTestId('debtTrendsChart')).toBeInTheDocument();
+    await findByTestId('customPoints');
+
+    // keep the chart out of view so the intro sweep doesn't drive the headers during this test
+    mockAllIsIntersecting(false);
+
+    // the whole chart is one tab stop rather than one per year
+    const chartSurface = container.querySelector('svg.recharts-surface');
+    expect(chartSurface).toHaveAttribute('tabindex', '0');
+    expect(chartSurface).toHaveAttribute('aria-label', 'Inner chart area');
+    expect(container.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
+
+    const expectYear = year => waitFor(() => expect(getByTestId('debtTrendsYearHeader').textContent).toContain(year));
+
+    // the mock GDP fixture runs 2011-2022, so focusing lands on 2011 and each arrow steps one year
+    fireEvent.focus(chartSurface);
+    await expectYear('2011');
+
+    fireEvent.keyDown(chartSurface, { key: 'ArrowRight' });
+    await expectYear('2012');
+
+    fireEvent.keyDown(chartSurface, { key: 'ArrowLeft' });
+    await expectYear('2011');
+
+    // leaving the chart returns the headers to the most recent year
+    fireEvent.blur(chartSurface);
+    await expectYear('2021');
+  });
+
+  it('initializes with the earliest data point', async () => {
+    const { findAllByText } = render(
+      <>
+        <DebtTrendsOverTimeChart beaGDPData={mockBeaGDPData} sectionId={sectionId} />
+      </>
+    );
+    act(() => {
+      // explicitly declare that the chart is not scrolled into view
+      mockAllIsIntersecting(false);
+    });
+
+    const latestDateComponents = await findAllByText('2021');
+    expect(latestDateComponents[0]).toBeInTheDocument();
+
+    act(() => {
+      mockAllIsIntersecting(true);
+    });
+    const dateComponents = await findAllByText('2011');
+    expect(dateComponents[0]).toBeInTheDocument();
+    const valueComponent = await findAllByText('80%');
+    expect(valueComponent[0]).toBeInTheDocument();
+  });
+
+  it('calls the appropriate analytics event when links are clicked on', async () => {
+    const spy = jest.spyOn(Analytics, 'event');
+    const { findByText, findByTestId } = render(
+      <>
+        <DebtTrendsOverTimeChart beaGDPData={mockBeaGDPData} sectionId={sectionId} />
+      </>
+    );
+
+    expect(await findByTestId('debtTrendsChart')).toBeInTheDocument();
+
+    const historicalDebt = await findByText('Historical Debt Outstanding');
+    const bea = await findByText('Bureau of Economic Analysis');
+
+    historicalDebt.click();
+    expect(spy).toHaveBeenCalledWith({
+      category: 'Explainers',
+      action: `Debt Citation Click`,
+      label: 'Historical Debt Outstanding',
+    });
+    spy.mockClear();
+
+    bea.click();
+    expect(spy).toHaveBeenCalledWith({
+      category: 'Explainers',
+      action: `Debt Citation Click`,
+      label: 'Bureau of Economic Analysis',
+    });
+    spy.mockClear();
+  });
+
+  it('calls the appropriate analytics event when the chart is hovered over', async () => {
+    const spy = jest.spyOn(Analytics, 'event');
+    const { findByTestId } = render(
+      <>
+        <DebtTrendsOverTimeChart beaGDPData={mockBeaGDPData} sectionId={sectionId} />
+      </>
+    );
+
+    const chart = await findByTestId('debtTrendsChart');
+    act(() => {
+      fireEvent.mouseOver(chart);
+      jest.advanceTimersByTime(5000);
+    });
+    expect(spy).toHaveBeenCalledWith({
+      category: 'Explainers',
+      action: `Chart Hover`,
+      label: 'Debt - Federal Debt Trends Over Time',
+    });
+    jest.runAllTimers();
+  });
+});
+
+
+
+
+_____________
+
+
+import { pxToNumber } from '../../../../../../helpers/styles-helper/styles-helper';
+import { breakpointLg, debtExplainerPrimary } from '../../../../../../variables.module.scss';
+import React, { useEffect, useState } from 'react';
+import Analytics from '../../../../../../utils/analytics/analytics';
+import { container, header, headerContainer, lineChartContainer, loadingIcon, subHeader } from './debt-trends-over-time-chart.module.scss';
+import { visWithCallout } from '../../../../explainer.module.scss';
+import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis, ZIndexLayer } from 'recharts';
+import VisualizationCallout from '../../../../../../components/visualization-callout/visualization-callout';
+import { formatPercentage } from '../../../../explainer-helpers/explainer-charting-helper';
+import { axisConfigs, Crosshair, getTicks, HoverPoint, subtractAxisThickness } from '../../../../explainer-helpers/explainer-recharts-helper';
+import { getDateWithoutTimeZoneAdjust } from '../../../../../../utils/date-utils';
+import ChartContainer from '../../../../explainer-components/chart-container/chart-container';
+import { debtOutstandingData } from '../../../../../../recoil/debtOutstandingDataState';
+import { useInView } from 'react-intersection-observer';
+import { getShortForm } from '../../../../../../utils/rounding-utils';
+import { getChangeLabel } from '../../../../heros/hero-helper';
+import { explainerCitationsMap } from '../../../../explainer-helpers/explainer-helpers';
+import LoadingIndicator from '../../../../../../components/loading-indicator/loading-indicator';
+
+let gaTimerDebtTrends;
+let ga4Timer;
+
+// The axis deliberately starts before the data does; the leading gap is expected.
+const axisStartYear = 1940;
+const decade = 10;
+const percentInterval = 20;
+const mobileTickInterval = 15;
+
+const getAxisEndYear = lastYear => Math.ceil(lastYear / decade) * decade;
+
+const getMaxPercent = data => Math.ceil(Math.max(...data.map(({ y }) => y)) / percentInterval) * percentInterval;
+
+const getMobileTicks = endYear => {
+  const ticks = [];
+  for (let year = axisStartYear; year <= endYear; year += mobileTickInterval) {
+    ticks.push(year);
+  }
+  return ticks;
+};
+
+const chartConfigs = {
+  ...axisConfigs,
+  tickSize: 6,
+  tickMargin: 8,
+};
+
+const getChartMargin = isMobile =>
+  subtractAxisThickness(isMobile ? { top: 10, right: 25, bottom: 40, left: 55 } : { top: 10, right: 25, bottom: 30, left: 50 });
+
+const desktopTickCount = 9;
+
+export const DebtTrendsOverTimeChart = ({ sectionId, beaGDPData, width }) => {
+  const [lineChartHoveredYear, setLineChartHoveredYear] = useState('');
+  const [lineChartHoveredValue, setLineChartHoveredValue] = useState('');
+  const [debtTrendsData, setDebtTrendsData] = useState([]);
+  const [isLoadingDebtTrends, setIsLoadingDebtTrends] = useState(true);
+  const [lastDebtValue, setLastDebtValue] = useState({});
+  const [lastRawDebtValue, setLastRawDebtValue] = useState('');
+  const [lastGDPValue, setLastGDPValue] = useState('');
+  const [defaultIndex, setDefaultIndex] = useState(null);
+  const [animationTriggeredOnce, setAnimationTriggeredOnce] = useState(false);
+  const [animationComplete, setAnimationComplete] = useState(false);
+  const [chartFocus, setChartFocus] = useState(false);
+  const [chartHover, setChartHover] = useState(false);
+  const payload = debtOutstandingData(state => state.payload);
+  const status = debtOutstandingData(state => state.status);
+  const refreshIfStale = debtOutstandingData(state => state.refreshIfStale);
+
+  useEffect(() => {
+    refreshIfStale();
+  }, [refreshIfStale]);
+
+  const { ref, inView } = useInView({
+    threshold: 0.5,
+    triggerOnce: true,
+  });
+
+  const chartParent = 'debtTrendsChart';
+  const chartWidth = 550;
+  const chartHeight = 490;
+
+  const { bea, historicalDebt } = explainerCitationsMap['national-debt'];
+
+  const processData = () => {
+    const { finalGDPData } = beaGDPData;
+    const debtData = payload;
+    const lastGDPValue = finalGDPData[finalGDPData.length - 1];
+    const debtToGDP = [];
+    const lastRawDebtMatchedValue = debtData.find(entry => entry.record_date.includes(lastGDPValue.fiscalYear));
+    finalGDPData.forEach(GDPEntry => {
+      const record = debtData.find(entry => entry.record_date.includes(GDPEntry.fiscalYear));
+      if (record) {
+        debtToGDP.push({
+          x: GDPEntry.x,
+          y: Math.round((parseFloat(record.debt_outstanding_amt) / GDPEntry.actual) * 100),
+        });
+      }
+    });
+    setDebtTrendsData(debtToGDP);
+    setLastDebtValue(debtToGDP[debtToGDP.length - 1]);
+    if (lastRawDebtMatchedValue) setLastRawDebtValue(lastRawDebtMatchedValue.debt_outstanding_amt);
+    setLastGDPValue(lastGDPValue);
+    setIsLoadingDebtTrends(false);
+  };
+
+  useEffect(() => {
+    if (status === 'hasValue' && payload) {
+      processData();
+    }
+  }, [status, payload]);
+
+  // Fires for hover, arrow-key navigation, and the intro sweep alike; `datum` is undefined once the
+  // reader leaves the chart, which returns the headers to the most recent year.
+  const handleActiveDatumChange = datum => {
+    setLineChartHoveredYear(datum ? datum.x : '');
+    setLineChartHoveredValue(datum ? formatPercentage(datum.y) : '');
+  };
+
+  useEffect(() => {
+    if (inView && debtTrendsData?.length && !animationTriggeredOnce) {
+      setAnimationTriggeredOnce(true);
+      const stepDuration = 50;
+      const timers = [];
+
+      debtTrendsData.forEach((point, index) => {
+        timers.push(
+          setTimeout(() => {
+            setDefaultIndex(index);
+          }, stepDuration * index + 550)
+        );
+      });
+      timers.push(
+        setTimeout(() => {
+          setDefaultIndex(null);
+          setAnimationComplete(true);
+        }, stepDuration * debtTrendsData.length + 550)
+      );
+      return () => {
+        timers.forEach(timer => clearTimeout(timer));
+      };
+    }
+  }, [inView, debtTrendsData]);
+
+  // The chart's decorations (crosshair, point marker) are live whenever the reader is driving it by
+  // mouse or keyboard, and while the intro sweep drives it for them.
+  const chartActive = chartFocus || chartHover || !animationComplete;
+
+  const handleMouseEnterLineChart = () => {
+    setChartHover(true);
+    gaTimerDebtTrends = setTimeout(() => {
+      Analytics.event({
+        category: 'Explainers',
+        action: 'Chart Hover',
+        label: 'Debt - Federal Debt Trends Over Time',
+      });
+    }, 3000);
+    ga4Timer = setTimeout(() => {
+      window.dataLayer = window.dataLayer || [];
+      window.dataLayer.push({
+        event: 'chart-hover-debt-trends',
+      });
+    }, 3000);
+  };
+
+  const handleMouseLeaveLineChart = () => {
+    setChartHover(false);
+    clearTimeout(gaTimerDebtTrends);
+    clearTimeout(ga4Timer);
+  };
+
+  const headerContent = () => {
+    const yearDisplay = lastDebtValue.x === undefined ? '--' : lineChartHoveredYear === '' ? lastDebtValue.x : lineChartHoveredYear;
+    const debtToGDPDisplay = lastDebtValue.y === undefined ? '--%' : lineChartHoveredValue === '' ? lastDebtValue.y + '%' : lineChartHoveredValue;
+    return (
+      <div className={headerContainer}>
+        <div>
+          <div className={header} data-testid="debtTrendsYearHeader">
+            {yearDisplay}
+          </div>
+          <span className={subHeader}>Fiscal Year</span>
+        </div>
+        <div>
+          <div className={header} data-testid="debtTrendsValueHeader">
+            {debtToGDPDisplay}
+          </div>
+          <span className={subHeader}>Debt to GDP</span>
+        </div>
+      </div>
+    );
+  };
+
+  const footerContent = (
+    <>
+      <p>
+        Visit the {historicalDebt} dataset to explore and download this data. The GDP data is sourced from the {bea}.
+      </p>
+      <p>Please note: This chart is updated as new GDP data is released, even if new debt data is available.</p>
+    </>
+  );
+
+  const isMobile = width < pxToNumber(breakpointLg);
+  const axisEndYear = lastDebtValue.x ? getAxisEndYear(lastDebtValue.x) : axisStartYear;
+  const maxPercent = debtTrendsData.length ? getMaxPercent(debtTrendsData) : percentInterval;
+
+  return (
+    <>
+      {debtTrendsData && (
+        <figure className={visWithCallout} ref={ref}>
+          <div className={container}>
+            <ChartContainer
+              title={`Federal Debt Trends Over Time, FY 1948 – ${lastDebtValue.x ?? '--'}`}
+              subTitle="Debt to Gross Domestic Product (GDP)"
+              header={headerContent()}
+              footer={footerContent}
+              date={lastDebtValue?.x ? getDateWithoutTimeZoneAdjust(`${lastDebtValue.x}-09-30`) : null}
+              altText={`Line graph displaying the federal debt to GDP trend over time from ${debtTrendsData[0]?.x ?? '--'} to ${lastDebtValue.x}.`}
+            >
+              {isLoadingDebtTrends ? (
+                <LoadingIndicator loadingClass={loadingIcon} />
+              ) : (
+                <div
+                  className={lineChartContainer}
+                  style={{ pointerEvents: animationComplete ? 'auto' : 'none' }}
+                  data-testid={`${chartParent}`}
+                  onMouseEnter={handleMouseEnterLineChart}
+                  onMouseLeave={handleMouseLeaveLineChart}
+                  onFocus={() => setChartFocus(true)}
+                  onBlur={() => setChartFocus(false)}
+                  id="debt-trends"
+                  role="presentation"
+                >
+                  {/* ResponsiveContainer keeps the chart's internal coordinate space equal to its rendered pixel
+                      size. Without it the SVG has to be stretched with a viewBox, and Recharts — which reads the
+                      pointer in DOM pixels — puts the crosshair increasingly far from the cursor as you move right. */}
+                  <ResponsiveContainer
+                    width="100%"
+                    aspect={chartWidth / chartHeight}
+                    initialDimension={{ width: chartWidth, height: chartHeight }}
+                  >
+                    <LineChart data={debtTrendsData} margin={getChartMargin(isMobile)} aria-label="Inner chart area">
+                      {/* Owns the active index that the crosshair, point, and data headers all read from. It has no
+                          visible content of its own — the intro sweep drives it through defaultIndex, and Recharts'
+                          accessibility layer drives it from hover and left/right arrow keys. */}
+                      <Tooltip
+                        active={chartActive}
+                        defaultIndex={defaultIndex ?? undefined}
+                        content={() => null}
+                        cursor={false}
+                        isAnimationActive={false}
+                        wrapperStyle={{ display: 'none' }}
+                      />
+                      <Crosshair />
+                      <XAxis
+                        dataKey="x"
+                        type="number"
+                        domain={[axisStartYear, axisEndYear]}
+                        ticks={isMobile ? getMobileTicks(axisEndYear) : getTicks(axisStartYear, axisEndYear, desktopTickCount)}
+                        interval={0}
+                        height={chartConfigs.axisThickness}
+                        tickSize={chartConfigs.tickSize}
+                        tickMargin={chartConfigs.tickMargin}
+                        axisLine={chartConfigs.axisLine}
+                        tickLine={chartConfigs.tickLine}
+                        tick={chartConfigs.tick}
+                        zIndex={chartConfigs.zIndex.axis}
+                      />
+                      <YAxis
+                        dataKey="y"
+                        type="number"
+                        domain={[0, maxPercent]}
+                        ticks={getTicks(0, maxPercent, 8)}
+                        interval={0}
+                        width={chartConfigs.axisThickness}
+                        tickFormatter={formatPercentage}
+                        tickSize={chartConfigs.tickSize}
+                        tickMargin={chartConfigs.tickMargin}
+                        axisLine={chartConfigs.axisLine}
+                        tickLine={chartConfigs.tickLine}
+                        tick={chartConfigs.tick}
+                        zIndex={chartConfigs.zIndex.axis}
+                      />
+                      <Line
+                        dataKey="y"
+                        type="linear"
+                        stroke={debtExplainerPrimary}
+                        strokeWidth={2}
+                        dot={false}
+                        activeDot={false}
+                        isAnimationActive={false}
+                      />
+                      <ZIndexLayer zIndex={chartConfigs.zIndex.point}>
+                        <HoverPoint data={debtTrendsData} onActiveChange={handleActiveDatumChange} />
+                      </ZIndexLayer>
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </ChartContainer>
+          </div>
+          <VisualizationCallout color={debtExplainerPrimary}>
+            <p>
+              The average GDP for fiscal year {lastDebtValue.x || '--'} was ${lastGDPValue ? getShortForm(lastGDPValue.actual) : '--'}, which was{' '}
+              {lastGDPValue ? getChangeLabel(lastGDPValue.actual, lastRawDebtValue, true) : '--'} the U.S. debt of $
+              {lastRawDebtValue ? getShortForm(lastRawDebtValue) : '--'}. This resulted in a Debt to GDP Ratio of {lastDebtValue.y || '--'} percent.
+              Generally, a higher Debt to GDP ratio indicates a government will have greater difficulty in repaying its debt.
+            </p>
+          </VisualizationCallout>
+        </figure>
+      )}
+    </>
+  );
+};
+
+
+
+
+
+
+
+
+______
+
+
+
+
+
