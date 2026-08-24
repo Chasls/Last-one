@@ -7,6 +7,316 @@ ______________________________________________
 
 
 
+import {
+  buildDateFilter,
+  buildFields,
+  buildSortParams,
+  datatableRequest,
+  fetchAllPages,
+  incorporateChartDates,
+  pagedDatatableRequest,
+  pivotData,
+} from './api-utils';
+import * as helpers from './api-utils-helper';
+import { TableCache } from '../components/dataset-data/table-cache/table-cache';
+import { mockFetchApi } from './mock-utils';
+import { mockDataToPivot, mockPivotedData, mockPivotView } from './api-utils-test-data';
+import { QueryClient } from '@tanstack/react-query';
+
+describe('Api Utils function library', () => {
+  const unitTestObjects = helpers.unitTestObjects;
+
+  const testTable = {
+    endpoint: 'testEndpoint',
+    dateField: 'test_date_field',
+    alwaysSortWith: ['field1', 'field2', 'field3'],
+  };
+
+  const selectedPivot = {
+    pivotView: {
+      aggregateOn: null,
+      chartType: 'none',
+      dimensionField: null,
+      filters: null,
+      title: 'Complete Table',
+    },
+    pivotValue: null,
+  };
+
+  const selectedPivotWithFilters = {
+    pivotView: {
+      aggregateOn: ['MONTH'],
+      dimensionField: 'field1',
+      filters: [
+        {
+          key: 'field1',
+          operator: 'eq',
+          value: 'Banana',
+        },
+        {
+          key: 'field2',
+          operator: 'neq',
+          value: 'null',
+        },
+        {
+          key: 'field3',
+          operator: 'eq',
+          value: 'Orange',
+        },
+      ],
+      title: 'Filtered Pivot',
+    },
+    pivotValue: 'field3',
+  };
+
+  it('adds sort parameters if alwaysSortBy property is provided', async () => {
+    global.fetch = jest.fn().mockReturnValueOnce(
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ data: [], links: { next: '' }, meta: { 'total-pages': 1 } }),
+      })
+    );
+    const mockRange = { from: new Date(2021, 0, 1), to: new Date(2021, 1, 1) };
+    await datatableRequest(testTable, mockRange, selectedPivot, { isCanceled: false, abortController: { signal: null } }, new TableCache());
+    expect(global.fetch.mock.calls).toEqual([
+      [
+        'https://www.transparency.treasury.gov/services/api/' +
+          'fiscal_service/testEndpoint?filter=test_date_field' +
+          ':gte:2021-01-01,test_date_field:lte:2021-02-01' +
+          '&sort=field1,field2,field3&page%5Bnumber%5D=1&page%5Bsize%5D=10000',
+        {
+          cache: 'no-cache',
+          headers: {
+            'Cache-Control': 'no-cache',
+          },
+          signal: null,
+        },
+      ],
+    ]);
+  });
+
+  it('adds custom filter when detailViewValue and detailViewFilterParam are provided', async () => {
+    global.fetch = jest.fn().mockReturnValueOnce(
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ data: [], links: { next: '' }, meta: { 'total-pages': 1 } }),
+      })
+    );
+    const mockRange = { from: new Date(2021, 0, 1), to: new Date(2021, 1, 1) };
+    await datatableRequest(
+      testTable,
+      mockRange,
+      selectedPivot,
+      { isCanceled: false, abortController: { signal: null } },
+      new TableCache(),
+      { value: '2022-10-10', secondary: null },
+      'index_date',
+      new QueryClient()
+    );
+    expect(global.fetch.mock.calls).toEqual([
+      [
+        'https://www.transparency.treasury.gov/services/api/fiscal_service/testEndpoint?filter=test_date_field:gte:2021-01-01,' +
+          'test_date_field:lte:2021-02-01,index_date:eq:2022-10-10&sort=field1,field2,field3&page%5Bnumber%5D=1&page%5Bsize%5D=10000',
+        {
+          cache: 'no-cache',
+          headers: {
+            'Cache-Control': 'no-cache',
+          },
+          signal: null,
+        },
+      ],
+    ]);
+  });
+
+  it(`adds appropriate query string filter parameter when there are a combination of
+  serializable and unserializable filters in the selected pivot`, async () => {
+    global.fetch = jest.fn().mockReturnValueOnce(
+      Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            data: [],
+            links: { next: '' },
+            meta: {
+              labels: { test_date_field: 'Date' },
+              dataTypes: { test_date_field: 'Date' },
+              'total-pages': 1,
+            },
+          }),
+      })
+    );
+
+    const mockRange = { from: new Date(2021, 0, 1), to: new Date(2021, 1, 1) };
+    await datatableRequest(
+      testTable,
+      mockRange,
+      selectedPivotWithFilters,
+      { isCanceled: false, abortController: { signal: null } },
+      new TableCache(),
+      '2022-10-10',
+      'index_date',
+      null,
+      new QueryClient()
+    );
+    expect(global.fetch.mock.calls[0][0]).toContain(
+      'filter=test_date_field%3Agte%3A2021-01-01%2Ctest_date_field%3Alte%3A2021-02-01%2Cfield1%3Aeq%3ABanana%2Cfield3%3Aeq%3AOrange&'
+    );
+  });
+
+  it(
+    'has a fetchAllPages method that automatically calls as ' +
+      'many pages of data as needed calling all pages subsequent to the first ' +
+      'concurrently',
+    async () => {
+      global.fetch = jest
+        .fn()
+        .mockImplementationOnce(mockFetchApi(1, 1))
+        .mockImplementationOnce(mockFetchApi(2, 200))
+        .mockImplementationOnce(mockFetchApi(3, 100));
+
+      await fetchAllPages('https://mockapirequest.url/', {
+        isCanceled: false,
+        abortController: {
+          cache: 'no-cache',
+          headers: {
+            'Cache-Control': 'no-cache',
+          },
+          signal: null,
+        },
+      }).then(result => {
+        expect(global.fetch.mock.calls).toEqual([
+          [
+            'https://mockapirequest.url/&page%5Bnumber%5D=1&page%5Bsize%5D=10000',
+            {
+              cache: 'no-cache',
+              headers: {
+                'Cache-Control': 'no-cache',
+              },
+              signal: null,
+            },
+          ],
+          [
+            'https://mockapirequest.url/&page%5Bnumber%5D=2&page%5Bsize%5D=10000',
+            {
+              cache: 'no-cache',
+              headers: {
+                'Cache-Control': 'no-cache',
+              },
+              signal: null,
+            },
+          ],
+          [
+            'https://mockapirequest.url/&page%5Bnumber%5D=3&page%5Bsize%5D=10000',
+            {
+              cache: 'no-cache',
+              headers: {
+                'Cache-Control': 'no-cache',
+              },
+              signal: null,
+            },
+          ],
+        ]);
+
+        const sequences = result.data.map(r => r.pageNumber);
+        expect(sequences).toEqual([1, 2, 3]); // data is ordered properly
+
+        // Call #2 is expected to initiate before call #3.
+        const timeCalledDiff = result.data[2].timeCalled - result.data[1].timeCalled;
+        expect(timeCalledDiff).toBeGreaterThanOrEqual(0);
+
+        // Call #3 is expected to finish before call #2.
+        const timeDiffReturned = result.data[1].timeReturned - result.data[2].timeReturned;
+        expect(timeDiffReturned).toBeGreaterThanOrEqual(0);
+      });
+    }
+  );
+
+  it('correctly applies alwaysSortWith fields in paginated requests', async () => {
+    global.fetch = jest.fn().mockReturnValue(
+      Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            data: [],
+            links: {
+              next: '&page%5Bnumber%5D=2&page%5Bsize%5D=10000',
+            },
+            meta: { 'total-pages': 3 },
+          }),
+      })
+    );
+    const fetchSpy = jest.spyOn(global, 'fetch');
+    await pagedDatatableRequest(unitTestObjects.dataTables[1], '2021-01-01', '2021-02-01', null, 1, 5);
+    expect(fetchSpy.mock.calls[0][0]).toContain('sort=-record_date,col4');
+  });
+
+  it('applies descending sort order to paginated requests where alwaysSortWith is not provided', async () => {
+    global.fetch = jest.fn().mockReturnValue(
+      Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            data: [],
+            links: {
+              next: '&page%5Bnumber%5D=2&page%5Bsize%5D=10000',
+            },
+            meta: { 'total-pages': 3 },
+          }),
+      })
+    );
+    const fetchSpy = jest.spyOn(global, 'fetch');
+    await pagedDatatableRequest(unitTestObjects.dataTables[0], '2021-01-01', '2021-02-01', null, 1, 5);
+    expect(fetchSpy.mock.calls[0][0]).toContain('sort=-record_date');
+  });
+
+  it('builds sort parameters for datatables based on configurations', () => {
+    const testTable1 = {
+      endpoint: 'testEndpoint',
+      dateField: 'test_date_field',
+    };
+    const testPivot = {
+      pivotView: {
+        aggregateOn: [
+          {
+            field: 'gouda',
+          },
+          {
+            field: 'cheddar',
+          },
+          {
+            field: 'mozzarella',
+          },
+        ],
+      },
+    };
+    expect(buildSortParams(null, null)).toBe('');
+
+    expect(buildSortParams(testTable)).toEqual(testTable.alwaysSortWith.join(','));
+    expect(buildSortParams(testTable1)).toEqual(`-${testTable1.dateField}`);
+    expect(buildSortParams(testTable, testPivot)).toEqual('-gouda,-cheddar,-mozzarella');
+  });
+
+  it('includes alwaysSort fields in th fields list for pivot requests', () => {
+    const mockTable = {
+      alwaysSortWith: ['column1', '-column2'],
+      dateField: 'column3',
+    };
+    const mockPivotValue = {
+      dimensionField: 'column1',
+      lastRowSnapshot: true,
+    };
+    const mockPivotValueField = 'column4';
+    const mockAggregateOn = null;
+
+    expect(buildFields(mockTable, mockPivotValue, mockPivotValueField, mockAggregateOn).sort()).toStrictEqual(
+      ['column1', 'column2', 'column3', 'column4'].sort()
+    );
+  });
+
+  it('builds correct pivot data using incorporateChartDates', () => {
+    expect(incorporateChartDates(mockDataToPivot, mockPivotView)).toStrictEqual(mockPivotedData);
+  });
+
   describe('prototype pollution guards (HX-121)', () => {
     // Rows arrive from the public API and their values are used as object keys. A row
     // value of '__proto__' must not reach through the accumulator to Object.prototype.
@@ -26,6 +336,50 @@ ______________________________________________
       const pivotView = { ...mockPivotView, aggregateOn: [{ field: 'record_date', type: 'DATE' }] };
 
       const result = incorporateChartDates({ data: [hostileRow], meta: { ...hostileMeta } }, pivotView);
+
+      expect({}.isAdmin).toBeUndefined();
+      expect(result.data).toHaveLength(1);
+    });
+
+    it('does not let pivotData pollute Object.prototype', () => {
+      const pivotView = { dimensionField: 'agency_nm', title: 'Agency Name', aggregateOn: null, lastRowSnapshot: null };
+
+      const result = pivotData({ data: [hostileRow], meta: { ...hostileMeta } }, 'record_date', pivotView, 'amount', null);
+
+      expect({}.amount).toBeUndefined();
+      expect(result.data).toHaveLength(1);
+    });
+  });
+
+  it('builds correct api date filter for custom date ranges', () => {
+    const selectedTable = {
+      apiFilter: {
+        customDateFilter: {
+          startDateField: 'settle_date',
+          endDateField: 'effective_date',
+          dateRange: 'endOfMonth',
+        },
+      },
+    };
+    const from = '2024-08-01';
+    const to = '2024-08-31';
+    const dateFilter = buildDateFilter(selectedTable, from, to);
+    const dateString = 'settle_date:gte:2024-08-31,effective_date:lte:2024-08-31';
+    expect(dateFilter).toEqual(dateString);
+  });
+
+  it('builds correct api date filter with no custom date ranges', () => {
+    const selectedTable = {
+      dateField: 'record_date',
+    };
+    const from = '2024-08-01';
+    const to = '2024-08-31';
+    const dateFilter = buildDateFilter(selectedTable, from, to);
+    const dateString = 'record_date:gte:2024-08-01,record_date:lte:2024-08-31';
+    expect(dateFilter).toEqual(dateString);
+  });
+});
+
 
 
 
