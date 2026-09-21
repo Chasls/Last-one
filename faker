@@ -1,1 +1,91 @@
+# CLAUDE.md
+
+Frontend for **fiscaldata.treasury.gov** (Treasury's Fiscal Data site). Gatsby 5 + React 19 static site, JS/JSX with newer code in TS/TSX.
+
+**This repo is public.** Never commit API keys, `.env` contents, internal hostnames, ticket descriptions, or security-finding details. Anything written to a committed file (including comments and test fixtures) is published.
+
+## Commands
+
+```bash
+npm install --legacy-peer-deps      # ALWAYS use this flag; plain `npm install` fails on peer conflicts
+npm run develop-dev                 # local dev server against the dev API -> http://localhost:8000
+npm run develop-qat | develop-uat | develop-stg | develop-prod
+npm run build                       # prod build (BUILD_ENV=prod); build-dev / build-qat / etc. also exist
+npm run clean                       # gatsby clean - try this first when dev server acts strangely
+
+npm test                            # full jest suite (slow; thousands of tests)
+npx jest path/to/dir-or-file        # run a subset - prefer this while iterating
+npx jest path/to/file --coverage --collectCoverageFrom=path/to/source.js   # coverage for one file
+npm run test:branch                 # tests + coverage for files changed vs master (what CI runs)
+npm run updateSnapshots
+
+npx prettier --write <files>        # format changed files
+npx eslint <files>                  # lint changed files
+npm run type-check                  # tsc --noEmit (strict mode is OFF)
+```
+
+CI (`.github/workflows/main.yml`) runs on PRs with Node 22: full `test:report` with a coverage comment, and `test:branch`. There is no lint or type-check gate in CI, so run prettier/eslint yourself on the files you touch. Cypress exists (`cypress/`) but is disabled in CI.
+
+## Environments and config
+
+- `BUILD_ENV` (dev/qat/uat/stg/prod) selects `env/<env>.js`, which is exposed to app code through `gatsby-env-variables` (`import { API_BASE_URL } from 'gatsby-env-variables'`). With no `BUILD_ENV`, `env/index.js` (production values) is used.
+- Env files control `API_BASE_URL`, `EXPERIMENTAL_ALLOWLIST`, `LOWER_ENV_FEATURE_ALLOWLIST`, `ADDITIONAL_DATASETS`, `ADDITIONAL_ENDPOINTS`, `EXCLUDED_ENDPOINT_IDS`.
+- **Feature gating:** wrap unreleased UI in `<Experimental featureId="...">` or `<LowerEnvironmentFeature featureId="...">` and add the id to the relevant env allowlists. Insight/explainer/featured-content pages use a `prodReady` flag in their page config.
+- `.env` (git-ignored, copied from `.env.example`) holds optional BLS/BEA keys. Without them, the build falls back to sample data in `static/data/`. That's expected; don't "fix" it.
+
+## Architecture
+
+- **`gatsby-node.js`** (~1250 lines) is the build-time core. It fetches dataset metadata and the release calendar from the API, merges them with static config, builds GraphQL nodes, and creates pages from templates in `src/layouts/`. Changes here affect every page, so be careful.
+- **Dataset config** lives in three places, merged at build time (see `code-documentation/dataset-configuration.md`):
+  - `src/transform/static-metadata/datasets.json`: datasets in all environments (slug, SEO, topics, related datasets, display flags)
+  - `src/transform/endpointConfig.js`: per-endpoint table/column/pivot config
+  - `env/<env>.js` `ADDITIONAL_DATASETS` / `ADDITIONAL_ENDPOINTS`: datasets that only appear in lower environments
+  - Shape: `src/models/IDatasetConfig.ts`
+- **Page configs** in `src/transform/`: `explainer-pages-config.js`, `insight-pages-config.js`, `featured-content-pages-config.js`, `topics-config.js`.
+- **Page templates** in `src/layouts/`: `dataset-detail`, `explainer` (America's Finance Guide explainers: debt, deficit, spending, revenue, savings bonds), `insight`, `featured-content`, `topics`, `currency-exchange-rates-converter`, `experimental`. Explainer/insight content is split into `sections/`.
+- **Static pages** in `src/pages/`.
+- **Shared UI** in `src/components/`. Tables use `@tanstack/react-table` (`table-components/`, `data-preview/`, `dtg-table/`). Charts use **Recharts** (newer), **Nivo** (`components/nivo/`), and some legacy D3 (`components/charts/`). Match whatever the surrounding feature already uses.
+- **Data fetching:** `src/utils/api-utils.js` (`apiPrefix`, `basicFetch`, date/format helpers). React Query is wrapped at root in `gatsby-browser.js` and persisted to sessionStorage; `react-query-client.js` exports `getDataFromCacheOrFetch`.
+- **Client state:** Zustand stores. They live in `src/recoil/` for historical reasons (Recoil was removed). `createCachedFetchStore.js` is the cached-fetch pattern.
+- **Downloads:** `src/helpers/download-service/`, websocket-based (`WEB_SOCKET_BASE_URL`), with `rxjs/webSocket` mocked globally in tests.
+- Types: shared interfaces go in `src/models/I*.ts`; shared types go in `src/models/fdg-types.ts`.
+
+## Code conventions (see `style-guide.md`)
+
+- Functional components only. Write new components in **TypeScript** (`FunctionComponent<Props>`). Don't convert existing JS files unless asked.
+- Component order: hooks/state → local variables → local functions → `useEffect` → `return`.
+- Styling uses **SCSS modules** (`foo.module.scss`) with a generated `foo.module.scss.d.ts` beside it. Import named classes: `import { container } from './foo.module.scss'`. Use variables from `src/variables.module.scss`; avoid hard-coded colors, sizes, and breakpoints. If you add a class, update the `.d.ts` too (the dev server regenerates it).
+- Prettier: single quotes in JS, double quotes in JSX attributes, `printWidth: 150`, trailing commas es5, semicolons.
+- Folder-per-component: `component-name/component-name.tsx` + `.module.scss` + `.spec.js`, with a `*-helper.js` for logic. File and folder names are kebab-case.
+- Don't leave `console.log` behind. Use `console.info`, `console.warn`, or `console.error` for logging that stays.
+- GraphQL `useStaticQuery` queries go in dedicated files, one query per file.
+- Evergreen values (numbers loaded from the API) show dashes (`--`/`- -`) as their visible default while loading. Keep that pattern.
+- Analytics: GA4 via `ga4DataLayerPush` (`src/helpers/google-analytics/`) plus `analyticsEventHandler`. Keep existing event names and labels unchanged unless asked; analysts depend on them.
+
+## Testing
+
+- Jest 30 + React Testing Library, jsdom. Specs sit next to their source as `*.spec.{js,ts,tsx}`.
+- Prefer RTL queries by role or text. Use `data-testid` only when needed. Use `@testing-library/user-event` for interaction.
+- `jest.setup.js` already mocks `gatsby-plugin-image`, `rxjs/webSocket`, `IntersectionObserver`, and others. `__mocks__/` covers gatsby, react-markdown, react-pdf, etc. Check these before adding a new mock.
+- For env-specific behavior, mock `gatsby-env-variables` with `jest.mock('gatsby-env-variables', () => ({ ... }))`.
+- Mock network with `global.fetch = jest.fn(...)`, `jest-fetch-mock`, or `fetch-mock`, whichever the neighboring specs use.
+- Components using React Query need a `QueryClientProvider` wrapper in tests (see `src/layouts/insight/insight.spec.js`).
+- **Coverage target: ≥93% on changed files** (PR checklist). When you change code, add or adjust tests so the new branches are covered.
+- Charts (Recharts/Nivo) render poorly in jsdom because they have no real layout. Pull logic into helpers and test those, and keep component tests to what renders.
+
+## Dependencies: read before touching package.json / package-lock.json
+
+- The tree is installed with `--legacy-peer-deps`, which makes hoisting fragile. If a build breaks after a fresh install (deleted `node_modules` or lockfile) and no recent code change explains it, **suspect dependency-tree drift first**. Compare `npm ls <pkg>` against what the lockfile encodes.
+- To force a package's root version, **add it as a direct dependency**. Avoid `overrides`, which force the version in nested copies too and break legacy chains (e.g. `babel-loader → schema-utils@3 → ajv-keywords@3 → ajv@6`). `ajv`/`ajv-keywords` are direct deps for exactly this reason. Don't remove them.
+- Don't regenerate `package-lock.json` wholesale. Make targeted changes and review the lockfile diff for dropped nested entries (e.g. `node_modules/gatsby/node_modules/ajv`).
+- Don't upgrade dependencies as a side effect of another task.
+
+## Working agreements
+
+- Branches and PR titles are named after Jira tickets (`FDG-12345`). Commit messages usually start with the ticket number. PRs target `master` and use `pull_request_template.md`.
+- Keep diffs focused. Don't reformat or refactor unrelated code in the same change, since reviewers flag irrelevant changes.
+- Accessibility matters (federal site, Section 508). New UI needs keyboard access, visible focus, labels/ARIA, and no new axe violations. `eslint-plugin-jsx-a11y` is enabled.
+- Check responsive behavior (mobile/tablet/desktop) for UI changes. Breakpoints are in `src/variables.module.scss`.
+- For security-scan findings, implement the **intent** of the fix minimally and idiomatically, not a machine-generated diff verbatim. Check whether an earlier change already covers it (e.g. `src/utils/safe-href.ts` for link sanitization). Add a regression test that fails without the fix.
+- Ignore stray `*.log` files and scratch files in the repo root. They're local artifacts, not project files.
     
