@@ -88,4 +88,176 @@ CI (`.github/workflows/main.yml`) runs on PRs with Node 22: full `test:report` w
 - Check responsive behavior (mobile/tablet/desktop) for UI changes. Breakpoints are in `src/variables.module.scss`.
 - For security-scan findings, implement the **intent** of the fix minimally and idiomatically, not a machine-generated diff verbatim. Check whether an earlier change already covers it (e.g. `src/utils/safe-href.ts` for link sanitization). Add a regression test that fails without the fix.
 - Ignore stray `*.log` files and scratch files in the repo root. They're local artifacts, not project files.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# CLAUDE.md — Fiscal Data (fiscaldata.treasury.gov)
+
+Frontend for `fiscaldata.treasury.gov`. Gatsby 5 + React 19, mixed JS/TS, SCSS modules, Jest + React Testing Library. Work is tracked in JIRA as `FDG-#####` tickets.
+
+---
+
+## How to work in this repo (read first)
+
+**Default to action, not questions.** Most tasks here follow patterns that already exist in the codebase. Find the closest existing example, follow it, and do the work.
+
+- **Don't ask when the code can answer it.** Before asking a question, search the repo. If a similar component, endpoint config, test, or helper exists, copy its approach.
+- **Make reasonable assumptions and state them.** If something is ambiguous but a sensible default exists, pick it, proceed, and list the assumptions in your final summary so they can be corrected.
+- **Batch questions.** If you truly must ask, ask once, up front, with all questions together. Each question should offer a recommended answer so the user can just say "yes".
+- **Only stop to ask when:** the change is destructive or hard to undo (deleting files, rewriting git history, pushing, changing `package.json` dependencies), the request has two readings that lead to meaningfully different code, or it touches production config (`src/transform/endpointConfig.js`, `datasets.json`, `env/prod.js`) in a way the ticket doesn't spell out.
+- **Don't ask permission for routine steps:** reading files, running tests/lint/prettier on files you touched, or creating/editing files inside the task's scope.
+- **Finish the loop.** After a code change: run the relevant spec files, run prettier on changed files, and report results. Don't stop at "here's the code, want me to test it?"
+- **Keep diffs scoped.** Don't reformat, rename, or refactor unrelated code. Reviewers explicitly watch for irrelevant changes.
+
+---
+
+## Commands
+
+```bash
+npm install --legacy-peer-deps      # ALWAYS use this flag; plain npm install will fail
+npm run develop-dev                 # local dev server against dev API (also: -qat, -uat, -stg, -prod)
+npm run build                       # prod build (BUILD_ENV=prod)
+
+npx jest path/to/folder --silent    # run tests for one area (preferred during work)
+npm run test:branch                 # tests changed since master (what CI runs on PRs)
+npm run test:coverage               # full suite with coverage (slow)
+npm run updateSnapshots             # only when a snapshot change is intentional
+
+npx prettier --write <files>        # format only the files you changed
+npx eslint <files>
+npm run type-check                  # tsc --noEmit
+```
+
+- Shell is Windows (PowerShell / Git Bash). Use forward slashes in paths for Jest and git.
+- The full test suite is heavy; CI uses `NODE_OPTIONS=--max_old_space_size=8192`. Prefer running targeted folders.
+
+---
+
+## Project layout
+
+| Path | What lives there |
+|---|---|
+| `src/components/<name>/` | Reusable components. Each folder holds the component, `*.module.scss` (+ generated `.d.ts`), and `*.spec.js` side by side. |
+| `src/layouts/` | Page templates: `dataset-detail`, `explainer` (AFG explainer pages: debt, deficit, spending, revenue, savings bonds), `insight`, `topics`, `featured-content`, `currency-exchange-rates-converter`. |
+| `src/pages/` | Gatsby file-based routes. |
+| `src/helpers/`, `src/utils/` | Shared logic (API requests, dates, downloads, formatting, GA tracking). Check here before writing a new helper. |
+| `src/models/` | TypeScript interfaces (`I*.ts`). Shared types go in `src/models/fdg-types.ts`. |
+| `src/recoil/` | Recoil atoms/selectors for cross-component state. |
+| `src/transform/` | Build-time config: `endpointConfig.js`, `static-metadata/datasets.json`, explainer/insight/topics page configs. |
+| `env/` | Per-environment config (`dev.js`, `qat.js`, `uat.js`, `stg.js`, `prod.js`), selected by `BUILD_ENV`. |
+| `gatsby-node.js` | Page creation and build-time data sourcing. |
+| `documentation/` | Data sources & methodology docs for explainer pages. |
+| `code-documentation/dataset-configuration.md` | How dataset config is split across files. Read this before touching dataset config. |
+
+---
+
+## Domain patterns you need to know
+
+### Dataset and endpoint configuration
+- `src/transform/static-metadata/datasets.json`: datasets present in **all** environments.
+- `src/transform/endpointConfig.js`: endpoint/table configs present in **all** environments, keyed by numeric ID (e.g. `330`). Fields include `endpoint`, `dateField`, `downloadName`, `alwaysSortWith`, `hideColumns`, etc.
+- `env/uat.js`, `env/qat.js`: datasets/endpoints that only exist in that lower environment (`ADDITIONAL_DATASETS`, `ADDITIONAL_ENDPOINTS`).
+
+**"Promoting X to prod"** is a common ticket: move the entry for that ID out of `env/uat.js` (or `qat.js`) and into `endpointConfig.js` (and `datasets.json` if it's a dataset), unchanged. Keep the leading comment (e.g. `// Upcoming Auctions V2`) and put it in numeric order. See commit `2ddcc37bb` for a clean example. It should be a pure move: same object, deleted from one place, added to the other.
+
+### Feature gating
+- `<LowerEnvironmentFeature featureId="...">` shows children only when `ENV_ID !== 'production'` and the ID is in that env's `LOWER_ENV_FEATURE_ALLOWLIST`.
+- `<Experimental featureId="...">` works the same way with `EXPERIMENTAL_ALLOWLIST`.
+- Releasing a gated feature = remove the wrapper and the allowlist entry.
+- Env values come from `import { ENV_ID, API_BASE_URL, ... } from 'gatsby-env-variables'`.
+
+### Data / API
+- API base: `https://api.fiscaldata.treasury.gov/services/api/fiscal_service/...`. Use the existing helpers in `src/utils/api-utils.js` and `src/helpers/api-request.ts`; don't hand-roll `fetch` calls.
+- Charts use **Nivo** (`@nivo/*`, wrappers in `src/components/nivo/`), plus some Recharts and D3 in older code. Match whatever the surrounding section already uses.
+- Tables use TanStack React Table (`src/components/data-table/`, `dtg-table/`, `table-components/`).
+
+---
+
+## Code style (from `style-guide.md` and `.prettierrc`)
+
+- **New code goes in TypeScript** (`.tsx`/`.ts`). Editing an existing `.jsx` file is fine; don't convert files nobody asked you to convert.
+- Functional components only. Order inside a component: hooks/`useState` → local variables → local functions → `useEffect` → `return`.
+- Interfaces go in `src/models/`, shared types in `fdg-types.ts`.
+- Styles: SCSS modules (`foo.module.scss`) next to the component. Use variables from `src/variables.module.scss`; don't hardcode colors, sizes, or breakpoints (reviewers flag literal CSS values).
+- Prettier: single quotes in JS, double quotes in JSX attributes, semicolons, 2-space indent, `printWidth: 150`, trailing commas (es5).
+- GraphQL queries (`useStaticQuery`) go in their own file, one query per file.
+- No `console.log` left in code. Use `console.info` / `warn` / `error` if a log must stay.
+- Evergreen values that haven't loaded or aren't available show a dash (`--`), not `0` or blank.
+
+---
+
+## Testing
+
+- Every changed or new file needs a co-located `*.spec.js` / `*.spec.tsx`. **Target is at least 93% coverage per file** (PR checklist requirement).
+- Use React Testing Library (`render`, `screen`, `userEvent`). Use `data-testid` only when there's no accessible role or text to query by.
+- Mocks: `__mocks__/`, `src/components/__testmocks__/`, `src/testData/`. Mock API calls with `jest-fetch-mock` the way neighboring specs do.
+- SCSS and images are already mocked by `jest.config.js`; don't add your own mocks for them.
+- When a test fails, fix the cause. Don't loosen assertions or update snapshots just to make it pass unless the behavior change is intended.
+
+---
+
+## Accessibility and quality bar (PR checklist)
+
+Changes ship to a public federal site, so:
+- Must not add accessibility issues (checked with Axe). Use semantic elements, labels, alt text, keyboard support, and visible focus states.
+- Must be responsive at mobile, tablet, and desktop widths and work in Chrome, Safari, Firefox, and Edge.
+- Watch prop handoff between components. Don't keep adding props; extract a component or use context/recoil instead.
+
+---
+
+## Dependencies — handle with care
+
+- Installs depend on `--legacy-peer-deps`, which makes hoisting fragile. If a fresh install or build breaks, **suspect dependency drift first** (compare `package-lock.json` against what's actually on disk with `npm ls <pkg>`) before changing code.
+- Prefer adding a **direct dependency** over adding to `overrides`. Overrides also force nested copies and can break legacy dependency chains.
+- Don't add, remove, or bump packages without saying so explicitly in your summary. Lockfile churn has caused real incidents here.
+
+---
+
+## Git and PRs
+
+- Branch names are the ticket number: `FDG-12345`. Commit messages start with the ticket: `FDG-12345 short description`.
+- `master` is the main branch. Never commit or push directly to it.
+- Don't commit, push, or open PRs unless asked.
+- Never commit `.env` (it holds BLS/BEA API keys). The site builds fine without keys using sample data in `static/data/`.
+- PR descriptions follow `pull_request_template.md`: JIRA link plus checklist.
+
+---
+
+## When you finish a task, report:
+1. What changed (files + one line each)
+2. Assumptions you made
+3. Test / lint results (actual output, pass/fail counts)
+4. Anything left for a human: visual check, cross-browser, Axe, follow-ups
+
     
