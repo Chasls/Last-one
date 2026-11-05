@@ -1,263 +1,353 @@
-# CLAUDE.md
+import React, { useEffect, useState } from 'react';
+import { apiPrefix, basicFetch } from '../../../../../utils/api-utils';
+import { faCommentDollar } from '@fortawesome/free-solid-svg-icons/faCommentDollar';
+import { faHandHoldingDollar } from '@fortawesome/free-solid-svg-icons/faHandHoldingDollar';
+import { faPiggyBank } from '@fortawesome/free-solid-svg-icons/faPiggyBank';
+import { revenueExplainerLightSecondary, revenueExplainerPrimary } from '../revenue.module.scss';
+import KeyTakeawaysSection from '../../../explainer-components/key-takeaways/key-takeaways-section';
+import GlossaryPopoverDefinition from '../../../../../components/glossary/glossary-term/glossary-popover-definition';
+import reactStringReplace from 'react-string-replace';
+import revenueConstants from '../constants';
+
+// Header rows like "Social Insurance and Retirement Receipts" come back with the string 'null' as their amount.
+// Number('null') is NaN, which breaks the sort and can leave that row first, so drop non-numeric rows before picking the largest.
+export const getLargestSource = rows =>
+  (rows || [])
+    .filter(row => Number.isFinite(Number(row?.current_fytd_rcpt_outly_amt)))
+    .sort((a, b) => Number(b.current_fytd_rcpt_outly_amt) - Number(a.current_fytd_rcpt_outly_amt))[0];
+
+const RevenueKeyTakeaways = () => {
+  const [latestCompleteFiscalYear, setLatestCompleteFiscalYear] = useState(0);
+  const [revenuePercentGDP, setRevenuePercentGDP] = useState(0);
+  const [totalGDP, setTotalGDP] = useState('');
+  const [priorFYLargestSource, setPriorFYLargestSource] = useState('');
+  const [priorFYLargestSourceTotPercent, setPriorFYLargestSourceTotPercent] = useState(0);
+  const [currentFY, setCurrentFY] = useState(0);
+  const [currentFYLargestSource, setCurrentFYLargestSource] = useState('');
+  const [currentFYLargestSourceTotPercent, setCurrentFYLargestSourceTotPercent] = useState(0);
+
+  useEffect(() => {
+    const hasBEAFYComplete = (fy, beaData) => {
+      const gdp = beaData.filter(data => data.LineDescription === 'Gross domestic product');
+      const needed = new Set([`${fy - 1}Q4`, `${fy}Q1`, `${fy}Q2`, `${fy}Q3`]);
+      for (const row of gdp) needed.delete(String(row.TimePeriod));
+      return needed.size === 0;
+    };
+
+    basicFetch(`${apiPrefix}${revenueConstants.PRIOR_FY}`).then(async res => {
+      if (!res?.data?.[0]) return;
+
+      const candidateFY = Number(res.data[0].record_fiscal_year);
+      const bea = await basicFetch(revenueConstants.BEA_URL);
+      const beaData = bea?.BEAAPI?.Results?.Data || [];
+      const fyToDisplay = hasBEAFYComplete(candidateFY, beaData) ? candidateFY : candidateFY - 1;
+      setLatestCompleteFiscalYear(fyToDisplay);
+
+      const gdpRows = (beaData || []).filter(d => d.LineDescription === 'Gross domestic product');
+      const quarters = gdpRows.filter(entry =>
+        [`${fyToDisplay - 1}Q4`, `${fyToDisplay}Q1`, `${fyToDisplay}Q2`, `${fyToDisplay}Q3`].some(tag => String(entry.TimePeriod) === tag)
+      );
+
+      let totalGDP = 0;
+      quarters.forEach(q => {
+        totalGDP += parseFloat(String(q.DataValue).replace(/,/g, ''));
+      });
+      const averageGDP = (totalGDP / Math.max(quarters.length, 1)) * 1000000;
+
+      setRevenuePercentGDP(Math.round((res.data[0].current_fytd_net_rcpt_amt / averageGDP) * 100));
+      setTotalGDP((averageGDP / 1000000000000).toFixed(2));
+    });
+
+    // previous FY content
+    basicFetch(`${apiPrefix}${revenueConstants.PRIOR_SINGLE_FYTD_RCPT_OUTLY_AMT}`).then(res => {
+      const currentFyAmt = res.data[0]['current_fytd_rcpt_outly_amt'];
+
+      basicFetch(`${apiPrefix}${revenueConstants.PRIOR_MULTI_FYTD_RCPT_OUTLY_AMT}`).then(res => {
+        const largest = getLargestSource(res?.data);
+        if (!largest) return;
+
+        setPriorFYLargestSource(largest.classification_desc);
+
+        const percentOfTot = (Number(largest.current_fytd_rcpt_outly_amt) / Number(currentFyAmt)) * 100;
+        if (Number.isFinite(percentOfTot)) setPriorFYLargestSourceTotPercent(Math.abs(percentOfTot).toFixed(1));
+      });
+    });
+
+    // current FY content
+    basicFetch(`${apiPrefix}${revenueConstants.CURRENT_SINGLE_FYTD_RCPT_OUTLY_AMT}`).then(res => {
+      const currentFyAmt = res.data[0]['current_fytd_rcpt_outly_amt'];
+
+      basicFetch(`${apiPrefix}${revenueConstants.CURRENT_MULTI_FYTD_RCPT_OUTLY_AMT}`).then(res => {
+        const largest = getLargestSource(res?.data);
+        if (!largest) return;
+
+        setCurrentFYLargestSource(largest.classification_desc);
+
+        const percentOfTot = (Number(largest.current_fytd_rcpt_outly_amt) / Number(currentFyAmt)) * 100;
+        if (Number.isFinite(percentOfTot)) setCurrentFYLargestSourceTotPercent(Math.abs(percentOfTot).toFixed(1));
+      });
+
+      basicFetch(`${apiPrefix}${revenueConstants.CURRENT_FY}`).then(res => {
+        setCurrentFY(res.data[0]['record_fiscal_year']);
+      });
+    });
+  }, []);
+
+  const firstTakeawayText = `In fiscal year (FY)  ${latestCompleteFiscalYear || '--'}, the largest source of federal revenue was
+  ${priorFYLargestSource || '--'} (${priorFYLargestSourceTotPercent || '--'}% of total revenue).
+  So far in fiscal year ${currentFY || '--'}, the largest source of federal revenue is
+  ${currentFYLargestSource || '--'} (${currentFYLargestSourceTotPercent || '--'}% of total revenue).
+  Federal revenue is used to fund a variety of goods, programs, and services to support the American public and
+  pay interest on government debt. Revenue is typically measured by fiscal year (FY).`;
+
+  const firstTakeawayTextWithGlossaryTerm = reactStringReplace(firstTakeawayText, 'fiscal year (FY)', (match, index) => {
+    if (index === 1) {
+      return (
+        <GlossaryPopoverDefinition term="fiscal year" page="Debt, Revenue & Spending explainer" key={index}>
+          {match}
+        </GlossaryPopoverDefinition>
+      );
+    } else return match;
+  });
+
+  const takeaways = [
+    {
+      text: firstTakeawayTextWithGlossaryTerm,
+      icon: faHandHoldingDollar,
+    },
+    {
+      text: `In addition to taxes, government revenue also comes from customs duties, leases of
+      government-owned land and buildings, the sale of natural resources, various usage and
+      licensing fees, and payments to federal agencies like the U.S. Department of the Interior.`,
+      icon: faCommentDollar,
+    },
+    {
+      text: `Federal revenue is commonly compared to gross domestic product (GDP).
+      This comparison provides a sense of the size of the federal government's earnings
+      in relation to the total amount of the entire country's economic output. In fiscal
+      year ${latestCompleteFiscalYear || '--'}, federal revenue was equal to ${revenuePercentGDP || '--'}%
+      of total gross domestic product (GDP), or economic activity, of the United States that year
+      $${totalGDP || '--'} trillion. `,
+      icon: faPiggyBank,
+    },
+  ];
+
+  return <KeyTakeawaysSection takeaways={takeaways} primaryColor={revenueExplainerPrimary} secondaryColor={revenueExplainerLightSecondary} />;
+};
+
+export default RevenueKeyTakeaways;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import { render, waitFor } from '@testing-library/react';
+import React from 'react';
+import fetchMock from 'fetch-mock';
+import { determineBEANoQ3FetchResponse } from '../../../../../utils/mock-utils';
+import RevenueKeyTakeaways, { getLargestSource } from './revenue-key-takeaways';
+import revenueConstants from '../constants';
+import { beaResponse } from '../../../../../utils/mock-utils-mock-data';
+
+describe('Revenue Key Takeaways evergreen values', () => {
+  const mockData = {
+    data: [
+      {
+        current_fytd_net_rcpt_amt: '22379494649.20',
+        record_calendar_month: '06',
+        record_calendar_year: '2021',
+        record_date: '2021-06-30',
+        record_fiscal_year: '2021',
+      },
+    ],
+  };
+
+  const mockPriorSngl_FROA = {
+    data: [
+      {
+        classification_desc: 'Total',
+        current_fytd_rcpt_outly_amt: '4045978858727.41',
+      },
+    ],
+  };
+
+  const mockPriorMulti_FROA = {
+    data: [
+      {
+        // parent row: the API returns the string 'null' for this amount
+        classification_desc: 'Social Insurance and Retirement Receipts',
+        current_fytd_rcpt_outly_amt: 'null',
+      },
+      {
+        classification_desc: 'Individual Income Taxes',
+        current_fytd_rcpt_outly_amt: '2044377037669.21',
+      },
+    ],
+  };
+
+  const mockCurrentFY_FROA = {
+    data: [
+      {
+        record_fiscal_year: '2025',
+      },
+    ],
+  };
+
+  const mockCurrentSngl_FROA = {
+    data: [
+      {
+        current_fytd_rcpt_outly_amt: '2151987110619.83',
+        classification_desc: 'Individual Income Taxes',
+      },
+    ],
+  };
+
+  const mockCurrentMulti_FROA = {
+    data: [
+      {
+        // parent row: the API returns the string 'null' for this amount
+        classification_desc: 'Social Insurance and Retirement Receipts',
+        current_fytd_rcpt_outly_amt: 'null',
+      },
+      {
+        current_fytd_rcpt_outly_amt: '1114485265535.88',
+        classification_desc: 'Individual Income Taxes',
+      },
+    ],
+  };
+
+  const baseUrl = 'https://www.transparency.treasury.gov/services/api/fiscal_service/';
+  beforeAll(() => {
+    // Prior mocks
+    fetchMock
+      .mockGlobal()
+      .route(baseUrl + revenueConstants.PRIOR_FY, mockData)
+      .route(baseUrl + revenueConstants.PRIOR_SINGLE_FYTD_RCPT_OUTLY_AMT, mockPriorSngl_FROA) // PRIOR_SINGLE_FYTD_RCPT_OUTLY_AMT
+      .route(baseUrl + revenueConstants.PRIOR_MULTI_FYTD_RCPT_OUTLY_AMT, mockPriorMulti_FROA) // PRIOR_MULTI_FYTD_RCPT_OUTLY_AMT
+      .route(baseUrl + revenueConstants.CURRENT_FY, mockCurrentFY_FROA) // CURRENT_FY mock
+      .route(baseUrl + revenueConstants.CURRENT_SINGLE_FYTD_RCPT_OUTLY_AMT, mockCurrentSngl_FROA) // CURRENT_SINGLE_FYTD_RCPT_OUTLY_AMT
+      .route(baseUrl + revenueConstants.CURRENT_MULTI_FYTD_RCPT_OUTLY_AMT, mockCurrentMulti_FROA) // CURRENT_MULTI_FYTD_RCPT_OUTLY_AMT
+      .route('begin:https://apps.bea.gov/api/', beaResponse);
+  });
+
+  afterAll(() => {
+    fetchMock.hardReset();
+  });
+
+  it('renders the data correctly', async () => {
+    const fetchSpy = jest.spyOn(global, 'fetch');
+    const { findByText } = render(<RevenueKeyTakeaways />);
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+    expect(await findByText('In fiscal year 2021', { exact: false })).toBeInTheDocument();
+    expect(await findByText('--%', { exact: false })).toBeInTheDocument();
+    expect(await findByText('22.65 trillion', { exact: false })).toBeInTheDocument();
+    expect(await findByText('Individual Income Taxes', { exact: false })).toBeInTheDocument();
+    expect(await findByText('50.5%', { exact: false })).toBeInTheDocument(); // prior year's %
+    expect(await findByText('51.8%', { exact: false })).toBeInTheDocument(); // current year's %
+  });
+});
+
+describe('Revenue Key Takeaways no GDP Q3 scenario', () => {
+  const mockNoQ3Data = {
+    data: [
+      {
+        current_fytd_net_rcpt_amt: '22379494649.20',
+        record_calendar_month: '09',
+        record_calendar_year: '2016',
+        record_date: '2016-09-30',
+        record_fiscal_year: '2016',
+      },
+    ],
+  };
+
+  beforeAll(() => {
+    fetchMock
+      .mockGlobal()
+      .route(
+        `begin:v1/accounting/mts/mts_table_4?filter=line_code_nbr:eq:830,record_calendar_month:eq:09&sort=-record_date&page%5bsize%5d=1`,
+        mockNoQ3Data
+      );
+    determineBEANoQ3FetchResponse(jest, mockNoQ3Data);
+  });
+
+  afterAll(() => {
+    fetchMock.hardReset();
+  });
+
+  it('renders the data correctly in takeaway 3 with 3 total quarters when GDP Q3 is not in but mts 4 is', async () => {
+    const fetchSpy = jest.spyOn(global, 'fetch');
+    const { findByText, findAllByText } = render(<RevenueKeyTakeaways />);
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+
+    expect(await findAllByText(/in fiscal year 2016/i)).toHaveLength(1);
+    expect(await findAllByText(/in fiscal year 2015/i)).toHaveLength(1);
+    expect(await findByText('11.09 trillion', { exact: false })).toBeInTheDocument();
+  });
+});
+
+describe('Revenue Key Takeaways containing GDP Q3 scenario', () => {
+  const mockQ3Data = {
+    data: [
+      {
+        current_fytd_net_rcpt_amt: '22379494649.20',
+        record_calendar_month: '09',
+        record_calendar_year: '2015',
+        record_date: '2015-09-30',
+        record_fiscal_year: '2015',
+      },
+    ],
+  };
+
+  beforeAll(() => {
+    fetchMock
+      .mockGlobal()
+      .route(
+        `begin:v1/accounting/mts/mts_table_4?filter=line_code_nbr:eq:830,record_calendar_month:eq:09&sort=-record_date&page%5bsize%5d=1`,
+        mockQ3Data
+      );
+    determineBEANoQ3FetchResponse(jest, mockQ3Data);
+  });
+
+  afterAll(() => {
+    fetchMock.hardReset();
+  });
+
+  it('renders the data correctly in takeaway 3 with 4 total quarters when GDP Q3 is present', async () => {
+    const fetchSpy = jest.spyOn(global, 'fetch');
+    const { findByText, findAllByText } = render(<RevenueKeyTakeaways />);
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+    expect(await findAllByText('In fiscal year 2015', { exact: false })).toHaveLength(2);
+    expect(await findByText('11.09 trillion', { exact: false })).toBeInTheDocument();
+  });
+});
+
+describe('getLargestSource', () => {
+  it('skips rows whose amount is not a number (the API sends the string "null" for header rows)', () => {
+    const rows = [
+      { classification_desc: 'Social Insurance and Retirement Receipts', current_fytd_rcpt_outly_amt: 'null' },
+      { classification_desc: 'Corporation Income Taxes', current_fytd_rcpt_outly_amt: '381414689057.62' },
+      { classification_desc: 'Individual Income Taxes', current_fytd_rcpt_outly_amt: '2845526866159.55' },
+    ];
+    expect(getLargestSource(rows).classification_desc).toBe('Individual Income Taxes');
+  });
+
+  it('returns undefined when there are no usable rows', () => {
+    expect(getLargestSource(undefined)).toBeUndefined();
+    expect(getLargestSource([{ classification_desc: 'x', current_fytd_rcpt_outly_amt: 'null' }])).toBeUndefined();
+  });
+});
 
-Frontend for **fiscaldata.treasury.gov** (Treasury's Fiscal Data site). Gatsby 5 + React 19 static site, JS/JSX with newer code in TS/TSX.
 
-**This repo is public.** Never commit API keys, `.env` contents, internal hostnames, ticket descriptions, or security-finding details. Anything written to a committed file (including comments and test fixtures) is published.
 
-## Commands
 
-```bash
-npm install --legacy-peer-deps      # ALWAYS use this flag; plain `npm install` fails on peer conflicts
-npm run develop-dev                 # local dev server against the dev API -> http://localhost:8000
-npm run develop-qat | develop-uat | develop-stg | develop-prod
-npm run build                       # prod build (BUILD_ENV=prod); build-dev / build-qat / etc. also exist
-npm run clean                       # gatsby clean - try this first when dev server acts strangely
 
-npm test                            # full jest suite (slow; thousands of tests)
-npx jest path/to/dir-or-file        # run a subset - prefer this while iterating
-npx jest path/to/file --coverage --collectCoverageFrom=path/to/source.js   # coverage for one file
-npm run test:branch                 # tests + coverage for files changed vs master (what CI runs)
-npm run updateSnapshots
-
-npx prettier --write <files>        # format changed files
-npx eslint <files>                  # lint changed files
-npm run type-check                  # tsc --noEmit (strict mode is OFF)
-```
-
-CI (`.github/workflows/main.yml`) runs on PRs with Node 22: full `test:report` with a coverage comment, and `test:branch`. There is no lint or type-check gate in CI, so run prettier/eslint yourself on the files you touch. Cypress exists (`cypress/`) but is disabled in CI.
-
-## Environments and config
-
-- `BUILD_ENV` (dev/qat/uat/stg/prod) selects `env/<env>.js`, which is exposed to app code through `gatsby-env-variables` (`import { API_BASE_URL } from 'gatsby-env-variables'`). With no `BUILD_ENV`, `env/index.js` (production values) is used.
-- Env files control `API_BASE_URL`, `EXPERIMENTAL_ALLOWLIST`, `LOWER_ENV_FEATURE_ALLOWLIST`, `ADDITIONAL_DATASETS`, `ADDITIONAL_ENDPOINTS`, `EXCLUDED_ENDPOINT_IDS`.
-- **Feature gating:** wrap unreleased UI in `<Experimental featureId="...">` or `<LowerEnvironmentFeature featureId="...">` and add the id to the relevant env allowlists. Insight/explainer/featured-content pages use a `prodReady` flag in their page config.
-- `.env` (git-ignored, copied from `.env.example`) holds optional BLS/BEA keys. Without them, the build falls back to sample data in `static/data/`. That's expected; don't "fix" it.
-
-## Architecture
-
-- **`gatsby-node.js`** (~1250 lines) is the build-time core. It fetches dataset metadata and the release calendar from the API, merges them with static config, builds GraphQL nodes, and creates pages from templates in `src/layouts/`. Changes here affect every page, so be careful.
-- **Dataset config** lives in three places, merged at build time (see `code-documentation/dataset-configuration.md`):
-  - `src/transform/static-metadata/datasets.json`: datasets in all environments (slug, SEO, topics, related datasets, display flags)
-  - `src/transform/endpointConfig.js`: per-endpoint table/column/pivot config
-  - `env/<env>.js` `ADDITIONAL_DATASETS` / `ADDITIONAL_ENDPOINTS`: datasets that only appear in lower environments
-  - Shape: `src/models/IDatasetConfig.ts`
-- **Page configs** in `src/transform/`: `explainer-pages-config.js`, `insight-pages-config.js`, `featured-content-pages-config.js`, `topics-config.js`.
-- **Page templates** in `src/layouts/`: `dataset-detail`, `explainer` (America's Finance Guide explainers: debt, deficit, spending, revenue, savings bonds), `insight`, `featured-content`, `topics`, `currency-exchange-rates-converter`, `experimental`. Explainer/insight content is split into `sections/`.
-- **Static pages** in `src/pages/`.
-- **Shared UI** in `src/components/`. Tables use `@tanstack/react-table` (`table-components/`, `data-preview/`, `dtg-table/`). Charts use **Recharts** (newer), **Nivo** (`components/nivo/`), and some legacy D3 (`components/charts/`). Match whatever the surrounding feature already uses.
-- **Data fetching:** `src/utils/api-utils.js` (`apiPrefix`, `basicFetch`, date/format helpers). React Query is wrapped at root in `gatsby-browser.js` and persisted to sessionStorage; `react-query-client.js` exports `getDataFromCacheOrFetch`.
-- **Client state:** Zustand stores. They live in `src/recoil/` for historical reasons (Recoil was removed). `createCachedFetchStore.js` is the cached-fetch pattern.
-- **Downloads:** `src/helpers/download-service/`, websocket-based (`WEB_SOCKET_BASE_URL`), with `rxjs/webSocket` mocked globally in tests.
-- Types: shared interfaces go in `src/models/I*.ts`; shared types go in `src/models/fdg-types.ts`.
-
-## Code conventions (see `style-guide.md`)
-
-- Functional components only. Write new components in **TypeScript** (`FunctionComponent<Props>`). Don't convert existing JS files unless asked.
-- Component order: hooks/state → local variables → local functions → `useEffect` → `return`.
-- Styling uses **SCSS modules** (`foo.module.scss`) with a generated `foo.module.scss.d.ts` beside it. Import named classes: `import { container } from './foo.module.scss'`. Use variables from `src/variables.module.scss`; avoid hard-coded colors, sizes, and breakpoints. If you add a class, update the `.d.ts` too (the dev server regenerates it).
-- Prettier: single quotes in JS, double quotes in JSX attributes, `printWidth: 150`, trailing commas es5, semicolons.
-- Folder-per-component: `component-name/component-name.tsx` + `.module.scss` + `.spec.js`, with a `*-helper.js` for logic. File and folder names are kebab-case.
-- Don't leave `console.log` behind. Use `console.info`, `console.warn`, or `console.error` for logging that stays.
-- GraphQL `useStaticQuery` queries go in dedicated files, one query per file.
-- Evergreen values (numbers loaded from the API) show dashes (`--`/`- -`) as their visible default while loading. Keep that pattern.
-- Analytics: GA4 via `ga4DataLayerPush` (`src/helpers/google-analytics/`) plus `analyticsEventHandler`. Keep existing event names and labels unchanged unless asked; analysts depend on them.
-
-## Testing
-
-- Jest 30 + React Testing Library, jsdom. Specs sit next to their source as `*.spec.{js,ts,tsx}`.
-- Prefer RTL queries by role or text. Use `data-testid` only when needed. Use `@testing-library/user-event` for interaction.
-- `jest.setup.js` already mocks `gatsby-plugin-image`, `rxjs/webSocket`, `IntersectionObserver`, and others. `__mocks__/` covers gatsby, react-markdown, react-pdf, etc. Check these before adding a new mock.
-- For env-specific behavior, mock `gatsby-env-variables` with `jest.mock('gatsby-env-variables', () => ({ ... }))`.
-- Mock network with `global.fetch = jest.fn(...)`, `jest-fetch-mock`, or `fetch-mock`, whichever the neighboring specs use.
-- Components using React Query need a `QueryClientProvider` wrapper in tests (see `src/layouts/insight/insight.spec.js`).
-- **Coverage target: ≥93% on changed files** (PR checklist). When you change code, add or adjust tests so the new branches are covered.
-- Charts (Recharts/Nivo) render poorly in jsdom because they have no real layout. Pull logic into helpers and test those, and keep component tests to what renders.
-
-## Dependencies: read before touching package.json / package-lock.json
-
-- The tree is installed with `--legacy-peer-deps`, which makes hoisting fragile. If a build breaks after a fresh install (deleted `node_modules` or lockfile) and no recent code change explains it, **suspect dependency-tree drift first**. Compare `npm ls <pkg>` against what the lockfile encodes.
-- To force a package's root version, **add it as a direct dependency**. Avoid `overrides`, which force the version in nested copies too and break legacy chains (e.g. `babel-loader → schema-utils@3 → ajv-keywords@3 → ajv@6`). `ajv`/`ajv-keywords` are direct deps for exactly this reason. Don't remove them.
-- Don't regenerate `package-lock.json` wholesale. Make targeted changes and review the lockfile diff for dropped nested entries (e.g. `node_modules/gatsby/node_modules/ajv`).
-- Don't upgrade dependencies as a side effect of another task.
-
-## Working agreements
-
-- Branches and PR titles are named after Jira tickets (`FDG-12345`). Commit messages usually start with the ticket number. PRs target `master` and use `pull_request_template.md`.
-- Keep diffs focused. Don't reformat or refactor unrelated code in the same change, since reviewers flag irrelevant changes.
-- Accessibility matters (federal site, Section 508). New UI needs keyboard access, visible focus, labels/ARIA, and no new axe violations. `eslint-plugin-jsx-a11y` is enabled.
-- Check responsive behavior (mobile/tablet/desktop) for UI changes. Breakpoints are in `src/variables.module.scss`.
-- For security-scan findings, implement the **intent** of the fix minimally and idiomatically, not a machine-generated diff verbatim. Check whether an earlier change already covers it (e.g. `src/utils/safe-href.ts` for link sanitization). Add a regression test that fails without the fix.
-- Ignore stray `*.log` files and scratch files in the repo root. They're local artifacts, not project files.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# CLAUDE.md — Fiscal Data (fiscaldata.treasury.gov)
-
-Frontend for `fiscaldata.treasury.gov`. Gatsby 5 + React 19, mixed JS/TS, SCSS modules, Jest + React Testing Library. Work is tracked in JIRA as `FDG-#####` tickets.
-
----
-
-## How to work in this repo (read first)
-
-**Default to action, not questions.** Most tasks here follow patterns that already exist in the codebase. Find the closest existing example, follow it, and do the work.
-
-- **Don't ask when the code can answer it.** Before asking a question, search the repo. If a similar component, endpoint config, test, or helper exists, copy its approach.
-- **Make reasonable assumptions and state them.** If something is ambiguous but a sensible default exists, pick it, proceed, and list the assumptions in your final summary so they can be corrected.
-- **Batch questions.** If you truly must ask, ask once, up front, with all questions together. Each question should offer a recommended answer so the user can just say "yes".
-- **Only stop to ask when:** the change is destructive or hard to undo (deleting files, rewriting git history, pushing, changing `package.json` dependencies), the request has two readings that lead to meaningfully different code, or it touches production config (`src/transform/endpointConfig.js`, `datasets.json`, `env/prod.js`) in a way the ticket doesn't spell out.
-- **Don't ask permission for routine steps:** reading files, running tests/lint/prettier on files you touched, or creating/editing files inside the task's scope.
-- **Finish the loop.** After a code change: run the relevant spec files, run prettier on changed files, and report results. Don't stop at "here's the code, want me to test it?"
-- **Keep diffs scoped.** Don't reformat, rename, or refactor unrelated code. Reviewers explicitly watch for irrelevant changes.
-
----
-
-## Commands
-
-```bash
-npm install --legacy-peer-deps      # ALWAYS use this flag; plain npm install will fail
-npm run develop-dev                 # local dev server against dev API (also: -qat, -uat, -stg, -prod)
-npm run build                       # prod build (BUILD_ENV=prod)
-
-npx jest path/to/folder --silent    # run tests for one area (preferred during work)
-npm run test:branch                 # tests changed since master (what CI runs on PRs)
-npm run test:coverage               # full suite with coverage (slow)
-npm run updateSnapshots             # only when a snapshot change is intentional
-
-npx prettier --write <files>        # format only the files you changed
-npx eslint <files>
-npm run type-check                  # tsc --noEmit
-```
-
-- Shell is Windows (PowerShell / Git Bash). Use forward slashes in paths for Jest and git.
-- The full test suite is heavy; CI uses `NODE_OPTIONS=--max_old_space_size=8192`. Prefer running targeted folders.
-
----
-
-## Project layout
-
-| Path | What lives there |
-|---|---|
-| `src/components/<name>/` | Reusable components. Each folder holds the component, `*.module.scss` (+ generated `.d.ts`), and `*.spec.js` side by side. |
-| `src/layouts/` | Page templates: `dataset-detail`, `explainer` (AFG explainer pages: debt, deficit, spending, revenue, savings bonds), `insight`, `topics`, `featured-content`, `currency-exchange-rates-converter`. |
-| `src/pages/` | Gatsby file-based routes. |
-| `src/helpers/`, `src/utils/` | Shared logic (API requests, dates, downloads, formatting, GA tracking). Check here before writing a new helper. |
-| `src/models/` | TypeScript interfaces (`I*.ts`). Shared types go in `src/models/fdg-types.ts`. |
-| `src/recoil/` | Recoil atoms/selectors for cross-component state. |
-| `src/transform/` | Build-time config: `endpointConfig.js`, `static-metadata/datasets.json`, explainer/insight/topics page configs. |
-| `env/` | Per-environment config (`dev.js`, `qat.js`, `uat.js`, `stg.js`, `prod.js`), selected by `BUILD_ENV`. |
-| `gatsby-node.js` | Page creation and build-time data sourcing. |
-| `documentation/` | Data sources & methodology docs for explainer pages. |
-| `code-documentation/dataset-configuration.md` | How dataset config is split across files. Read this before touching dataset config. |
-
----
-
-## Domain patterns you need to know
-
-### Dataset and endpoint configuration
-- `src/transform/static-metadata/datasets.json`: datasets present in **all** environments.
-- `src/transform/endpointConfig.js`: endpoint/table configs present in **all** environments, keyed by numeric ID (e.g. `330`). Fields include `endpoint`, `dateField`, `downloadName`, `alwaysSortWith`, `hideColumns`, etc.
-- `env/uat.js`, `env/qat.js`: datasets/endpoints that only exist in that lower environment (`ADDITIONAL_DATASETS`, `ADDITIONAL_ENDPOINTS`).
-
-**"Promoting X to prod"** is a common ticket: move the entry for that ID out of `env/uat.js` (or `qat.js`) and into `endpointConfig.js` (and `datasets.json` if it's a dataset), unchanged. Keep the leading comment (e.g. `// Upcoming Auctions V2`) and put it in numeric order. See commit `2ddcc37bb` for a clean example. It should be a pure move: same object, deleted from one place, added to the other.
-
-### Feature gating
-- `<LowerEnvironmentFeature featureId="...">` shows children only when `ENV_ID !== 'production'` and the ID is in that env's `LOWER_ENV_FEATURE_ALLOWLIST`.
-- `<Experimental featureId="...">` works the same way with `EXPERIMENTAL_ALLOWLIST`.
-- Releasing a gated feature = remove the wrapper and the allowlist entry.
-- Env values come from `import { ENV_ID, API_BASE_URL, ... } from 'gatsby-env-variables'`.
-
-### Data / API
-- API base: `https://api.fiscaldata.treasury.gov/services/api/fiscal_service/...`. Use the existing helpers in `src/utils/api-utils.js` and `src/helpers/api-request.ts`; don't hand-roll `fetch` calls.
-- Charts use **Nivo** (`@nivo/*`, wrappers in `src/components/nivo/`), plus some Recharts and D3 in older code. Match whatever the surrounding section already uses.
-- Tables use TanStack React Table (`src/components/data-table/`, `dtg-table/`, `table-components/`).
-
----
-
-## Code style (from `style-guide.md` and `.prettierrc`)
-
-- **New code goes in TypeScript** (`.tsx`/`.ts`). Editing an existing `.jsx` file is fine; don't convert files nobody asked you to convert.
-- Functional components only. Order inside a component: hooks/`useState` → local variables → local functions → `useEffect` → `return`.
-- Interfaces go in `src/models/`, shared types in `fdg-types.ts`.
-- Styles: SCSS modules (`foo.module.scss`) next to the component. Use variables from `src/variables.module.scss`; don't hardcode colors, sizes, or breakpoints (reviewers flag literal CSS values).
-- Prettier: single quotes in JS, double quotes in JSX attributes, semicolons, 2-space indent, `printWidth: 150`, trailing commas (es5).
-- GraphQL queries (`useStaticQuery`) go in their own file, one query per file.
-- No `console.log` left in code. Use `console.info` / `warn` / `error` if a log must stay.
-- Evergreen values that haven't loaded or aren't available show a dash (`--`), not `0` or blank.
-
----
-
-## Testing
-
-- Every changed or new file needs a co-located `*.spec.js` / `*.spec.tsx`. **Target is at least 93% coverage per file** (PR checklist requirement).
-- Use React Testing Library (`render`, `screen`, `userEvent`). Use `data-testid` only when there's no accessible role or text to query by.
-- Mocks: `__mocks__/`, `src/components/__testmocks__/`, `src/testData/`. Mock API calls with `jest-fetch-mock` the way neighboring specs do.
-- SCSS and images are already mocked by `jest.config.js`; don't add your own mocks for them.
-- When a test fails, fix the cause. Don't loosen assertions or update snapshots just to make it pass unless the behavior change is intended.
-
----
-
-## Accessibility and quality bar (PR checklist)
-
-Changes ship to a public federal site, so:
-- Must not add accessibility issues (checked with Axe). Use semantic elements, labels, alt text, keyboard support, and visible focus states.
-- Must be responsive at mobile, tablet, and desktop widths and work in Chrome, Safari, Firefox, and Edge.
-- Watch prop handoff between components. Don't keep adding props; extract a component or use context/recoil instead.
-
----
-
-## Dependencies — handle with care
-
-- Installs depend on `--legacy-peer-deps`, which makes hoisting fragile. If a fresh install or build breaks, **suspect dependency drift first** (compare `package-lock.json` against what's actually on disk with `npm ls <pkg>`) before changing code.
-- Prefer adding a **direct dependency** over adding to `overrides`. Overrides also force nested copies and can break legacy dependency chains.
-- Don't add, remove, or bump packages without saying so explicitly in your summary. Lockfile churn has caused real incidents here.
-
----
-
-## Git and PRs
-
-- Branch names are the ticket number: `FDG-12345`. Commit messages start with the ticket: `FDG-12345 short description`.
-- `master` is the main branch. Never commit or push directly to it.
-- Don't commit, push, or open PRs unless asked.
-- Never commit `.env` (it holds BLS/BEA API keys). The site builds fine without keys using sample data in `static/data/`.
-- PR descriptions follow `pull_request_template.md`: JIRA link plus checklist.
-
----
-
-## When you finish a task, report:
-1. What changed (files + one line each)
-2. Assumptions you made
-3. Test / lint results (actual output, pass/fail counts)
-4. Anything left for a human: visual check, cross-browser, Axe, follow-ups
-
-    
