@@ -1,95 +1,89 @@
-@ -0,0 +1,94 @@
-# Fiscal Data – Claude Instructions
+# Personal instructions (not committed)
 
-Gatsby + React site for fiscaldata.treasury.gov. Mixed JS/JSX and TS/TSX, SCSS modules, Jest + React Testing Library.
+These add to the team CLAUDE.md for my sessions. The team file wins on code style; this file wins on how we work together.
 
-The full team style guide is in @style-guide.md. The rules below are the ones that matter most day to day.
+## Don't ask a million questions
 
-## The main rule: match the code around you
+I'd rather correct a wrong assumption than answer ten questions.
 
-Before writing anything, look at the neighboring files in the same folder and copy their patterns: file layout, naming,
-imports, how state and fetching are handled, how tests are structured. Consistency with the existing code matters more
-than what you think is "best practice."
+- Find the closest existing pattern in the repo and follow it. Don't ask anything the code can answer.
+- If something's ambiguous, pick the sensible option, keep going, and list your assumptions at the end.
+- If you truly must ask, ask once, everything at the same time, with a recommended answer for each so I can say "yes".
+- Only stop and ask for: deleting files, git history, pushing, dependency changes, or production config the ticket
+  doesn't spell out.
+- Never ask permission to read, search, or run tests / lint / prettier / type-check. Just run them and tell me the
+  results. Don't end with "want me to test it?"
+- When I say "make the change if needed," that's a yes. Make it.
 
-- Don't introduce new libraries, state managers, styling approaches, or abstractions without being asked.
-- Don't refactor, rename, reformat, or "clean up" code outside the scope of the task.
-- Don't add clever or unusual constructs (generics gymnastics, HOCs, custom hook factories, class components,
-  render props, barrels/index re-exports) where a plain function or component does the job.
-- Keep diffs small. If a change touches unrelated files, stop and explain why.
+## Check before you claim
 
-## Code style
+- Don't say when something started or what it "used to do" from reading the current code. Check `git log` / `git log -L`
+  first and name the commit and ticket. (A session once said "since 2022" without looking. It was an August refactor.)
+- When I say "this wasn't an issue before," take that seriously: find what changed (code, data, or environment)
+  before proposing a fix.
+- For data bugs, look at the live API response before guessing. Rule out the obvious data theories (like the
+  October fiscal-year rollover) with evidence, not opinion.
+- When an environment behaves differently (prod vs. UAT vs. STG vs. temp), compare each environment's API responses
+  before touching frontend code, and tell me plainly whether it's a frontend or backend problem. I don't know which
+  API the temp site uses. Say so and suggest checking the Network tab instead of assuming.
 
-Prettier and ESLint are the source of truth. Run them; don't hand-format.
+## When I doubt a fix
 
-- 2-space indent, semicolons, 150-char lines, ES5 trailing commas, LF line endings.
-- Single quotes in JS/TS; double quotes for JSX attributes.
-- Functional components only, written as arrow function expressions (`const Foo = () => {}`), not `function Foo()`.
-- Single-parameter arrow functions have no parentheses: `rows => ...`.
-- Component order: hooks (`useState`, custom hooks) → local variables → local functions → `useEffect` → `return`.
-- Destructure props.
-- Prefer named exports for helpers; the component itself is the `export default` at the bottom of the file.
-- `console.log` is for local debugging only. Use `console.info` / `console.warn` / `console.error` for anything
-  that stays in the code.
-- Prefix intentionally unused vars/args with `_`.
+- If I say a fix "isn't great," show me how the same problem is handled elsewhere in the repo (for example, the
+  dataset details pages) and explain why with file references.
+- If my existing solution is actually right, say so. Don't change things just because I questioned them. A comment
+  explaining why it's there is often the right change.
 
-## TypeScript
+## How I like fixes done
 
-- New components go in `.tsx`. Don't convert existing `.jsx` files to TypeScript unless asked.
-- Components are typed `const Foo: FunctionComponent<FooProps> = ({ ... }) => { ... }` (imported from `react`).
-- Component-local prop types live in the component file. Interfaces shared across components go in
-  `src/models/` as `I<Name>.ts`.
-- Avoid `any`; if you must use it, keep it narrow.
-- Don't add prop-types to new components.
+1. Reproduce the bug in a test using the real data shape (e.g., the API's literal `"null"` string), and confirm it fails.
+2. Make the smallest fix that matches the surrounding code.
+3. Run the tests for that folder, then ESLint and Prettier on the touched files.
+4. If Prettier reformats lines I didn't change, undo those parts. The diff should show only the fix.
+5. Check whether the same bug pattern exists in sibling components (e.g., revenue and spending charts from the same
+   refactor), and fix or flag them.
 
-## Files and folders
+For data-driven fixes, tell me if the fix still holds when the data changes back or changes again. A short
+"if the table does X → what happens" table is perfect.
 
-- kebab-case for file and folder names: `my-component/my-component.tsx`.
-- A component's styles and tests sit next to it:
-  `my-component.tsx`, `my-component.module.scss`, `my-component.spec.js` (or `.spec.tsx`).
-- Styles are SCSS modules imported with named imports:
-  `import { container, title } from './my-component.module.scss';`
-- Use the shared values in `src/variables.module.scss` instead of hardcoded colors, font sizes, or breakpoints.
-- Use existing helpers before writing new ones: `src/utils/` (`api-utils`, `date-utils`, `rounding-utils`),
-  `src/helpers/`, `src/hooks/`.
-- API calls go through `basicFetch` / `apiPrefix` from `src/utils/api-utils`.
-- GraphQL queries (`useStaticQuery`, page `query`) live in their own file, one query per file.
+Think about behavior over time: what happens next month, at the fiscal-year rollover (Oct 1), or when a new file
+drop replaces an old one. Call out anything that would lose history.
 
-## Tests
+## How I like answers
 
-- Jest + React Testing Library. Test files are `*.spec.js` / `*.spec.tsx` next to the component.
-- Use `data-testid` only when there's no accessible role or text to query by.
-- Mock fetches the way neighboring specs do (`fetch-mock` / `jest-fetch-mock`, data in `src/utils/mock-utils*`).
-- Target: every changed file at 93%+ coverage.
-- When a value comes from the API, render `--` as the placeholder while it's loading or missing (matches existing
-  explainer pages).
+- Short and direct. Recommend one option instead of listing every possibility.
+- Lead with the answer ("It's not the rollover, it's one bad row"), then the evidence.
+- I also write for business and product folks. When I ask for a business version, give exactly what I asked for
+  (if I say one sentence, it's one sentence) with no code, library names, or jargon.
+- When summarizing a ticket, give two versions: plain-language (what changed, why it matters to users) and technical
+  (files, approach, risks).
+- End-of-task report: what changed (file + one line each), assumptions, test/lint results with real counts, and what
+  still needs a human (visual check, cross-browser, Axe).
 
-## Accessibility
+## Research / spike tickets
 
-- `jsx-a11y` rules are enforced. Use semantic elements, `alt` text, labels, and keyboard-reachable controls.
-- Don't introduce new axe violations.
+1. Compare the options in a short table, with a recommendation.
+2. Find the real blocker (often a data or mapping gap, not the library choice).
+3. Small POC with about 5 representative cases, including an awkward edge case.
+4. Notes in two parts: business-facing and technical.
 
-## Commands
+## Environment
 
-```
-npm run develop-dev                     # local dev server
-npx jest path/to/folder --silent        # run tests for what you changed
-npm run test:branch                     # tests changed since master, with coverage
-npx eslint path/to/file                 # lint
-npx prettier --write path/to/file       # format
-npm run type-check                      # tsc --noEmit
-```
+- Windows 11, VS Code extension, PowerShell and Git Bash. The repo is in OneDrive, so quote paths with spaces. Odd
+  file locks or slow watching are probably OneDrive sync.
+- Python is not installed (the `python` command opens the Microsoft Store). Use Node for scratch scripts.
+- Ripgrep globs can't nest braces: use `*.{js,jsx,ts,tsx}`, not `{a,src/**/*.{js,ts}}`.
+- Scratch scripts and output go in the session scratchpad, not the repo root. Don't add more `*.log` files there.
 
-Before saying a change is done: run the relevant tests, ESLint, and Prettier on the files you touched.
+## Git
 
-## Git and PRs
+- Never commit, push, or open a PR unless I ask in that conversation.
+- When I do: branch `FDG-#####` off `master`, and start the commit message with the ticket number.
 
-- Branches are named after the Jira ticket: `FDG-12345`.
-- Don't commit, push, or open PRs unless asked.
-- PRs follow `pull_request_template.md`: link the Jira ticket and fill out the checklist.
-- Don't change `package.json` / `package-lock.json` unless the task is about dependencies. The repo installs with
-  `--legacy-peer-deps`; prefer adding a direct dependency over adding an `overrides` entry.
+## Lessons learned
 
-## Don't touch
-
-- `.env` and other secrets. Never print or commit their values.
-- Generated output: `public/`, `.cache/`, `coverage/`, `*.scss.d.ts`.
+- Fresh install or build failures: suspect dependency drift before code. Compare the lockfile with what's on disk
+  (`npm ls <pkg>`). The May 2026 "sharp" failure was really two problems: a network block plus lockfile churn.
+- Prefer direct dependencies over `overrides`. Overrides cascade into nested packages and break legacy chains.
+- Machine-generated security findings (Mythos): the parent Jira story holds the verdicts. Implement the intent in our
+  style, not the generated diff, and check whether an earlier ticket already fixed it.
